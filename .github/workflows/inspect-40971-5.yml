@@ -1,0 +1,60 @@
+name: Inspect existing official 40971-5 artifact
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: Successful official 40971-5 build run to inspect
+        required: true
+        default: '38142403369'
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout inspection script
+        uses: actions/checkout@v6
+
+      - name: Download existing build artifact from this repository
+        uses: actions/download-artifact@v7
+        with:
+          name: official-40971-5-uapi5-susfs
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: downloaded
+
+      - name: Install AArch64 disassembler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends binutils-aarch64-linux-gnu
+
+      - name: Verify original artifact and export compact outputs
+        env:
+          SOURCE_BUILD_RUN: ${{ inputs.build_run_id }}
+        run: |
+          python3 .github/workflows/scripts/inspect_40971_5_artifacts.py \
+            --input downloaded \
+            --kernel-only kernel-40971-5-only \
+            --evidence kernel-40971-5-evidence \
+            --build-run-id "$SOURCE_BUILD_RUN"
+
+      - name: Upload original kernel ZIP only
+        uses: actions/upload-artifact@v7
+        with:
+          name: kernel-40971-5-only
+          path: kernel-40971-5-only/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload compact evidence without vmlinux
+        uses: actions/upload-artifact@v7
+        with:
+          name: kernel-40971-5-evidence
+          path: kernel-40971-5-evidence/
+          if-no-files-found: error
+          retention-days: 7
