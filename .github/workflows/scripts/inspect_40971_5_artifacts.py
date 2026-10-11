@@ -118,6 +118,13 @@ def hex_number(value: int) -> str:
     return f"0x{value:x}"
 
 
+def function_target(name: str) -> str | None:
+    for target in FUNCTIONS:
+        if name == target or re.fullmatch(re.escape(target) + r"\$[0-9a-f]{32}", name):
+            return target
+    return None
+
+
 def elf_proof(path: Path, image: bytes, diagnostic_path: Path | None = None) -> tuple[list[dict], dict]:
     elf = path.read_bytes()
     require(elf[:6] == b"\x7fELF\x02\x01" and struct.unpack_from("<H", elf, 18)[0] == 183,
@@ -184,7 +191,7 @@ def elf_proof(path: Path, image: bytes, diagnostic_path: Path | None = None) -> 
                 candidates.append({"name": name, "type": kind, "binding": info >> 4,
                                    "size": size, "shndx": section_index,
                                    "section_name": section_name, "address": hex_number(address)})
-            target = next((f for f in FUNCTIONS if name == f or name.startswith(f + ".")), None)
+            target = function_target(name)
             if not target or kind != 2 or size <= 32 or section_index >= shcount:
                 continue
             section = sections[section_index]
@@ -201,7 +208,7 @@ def elf_proof(path: Path, image: bytes, diagnostic_path: Path | None = None) -> 
     missing = set(FUNCTIONS) - set(found)
     if missing and diagnostic_path is not None:
         diagnostic = {"missing_required_symbols": sorted(missing),
-                      "required_rule": "STT_FUNC, exact name or name plus dot suffix, size > 32, bytes in Image",
+                      "required_rule": "STT_FUNC, exact name or exact $ plus 32 lowercase hex suffix; size > 32; bytes in Image",
                       "symtab_count": len(symbol_tables), "symtabs": symbol_tables,
                       "candidate_count": len(candidates), "candidate_symbols": candidates,
                       "elf_sections": {"count": shcount, **named_sections},
