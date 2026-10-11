@@ -118,7 +118,7 @@ def hex_number(value: int) -> str:
     return f"0x{value:x}"
 
 
-def elf_proof(path: Path, image: bytes) -> tuple[list[dict], dict]:
+def elf_proof(path: Path, image: bytes, diagnostic_path: Path | None = None) -> tuple[list[dict], dict]:
     elf = path.read_bytes()
     require(elf[:6] == b"\x7fELF\x02\x01" and struct.unpack_from("<H", elf, 18)[0] == 183,
             "vmlinux is not little-endian AArch64 ELF64")
@@ -156,19 +156,36 @@ def elf_proof(path: Path, image: bytes) -> tuple[list[dict], dict]:
     require(loads, "ELF LOAD segments missing")
     found = {}
     text_base = None
+    symbol_tables = []
+    candidates = []
     for table in sections:
         if table[1] != 2:  # SHT_SYMTAB
             continue
         require(table[9] >= 24 and table[6] < shcount, "invalid ELF symbol table")
+        stats = {"entry_count": table[5] // table[9], "entry_size": table[9],
+                 "file_offset": hex_number(table[4]), "type_counts": {}, "named_count": 0}
+        symbol_tables.append(stats)
         string_section = sections[table[6]]
         names = elf[string_section[4]:string_section[4] + string_section[5]]
         for offset in range(table[4], table[4] + table[5], table[9]):
             nameoff, info, _, section_index, address, size = struct.unpack_from("<IBBHQQ", elf, offset)
             name = name_from(names, nameoff)
+            kind = info & 0x0f
+            stats["type_counts"][str(kind)] = stats["type_counts"].get(str(kind), 0) + 1
+            stats["named_count"] += bool(name)
             if name == "_text":
                 text_base = address
+            lower = name.lower()
+            if ("get_info" in lower or "report_event" in lower or
+                    ("ksu" in lower and "ioctl" in lower) or
+                    "anon_ksu" in lower or "supercall" in lower):
+                section_name = (name_from(shnames, sections[section_index][0])
+                                if section_index < shcount else f"special:{section_index}")
+                candidates.append({"name": name, "type": kind, "binding": info >> 4,
+                                   "size": size, "shndx": section_index,
+                                   "section_name": section_name, "address": hex_number(address)})
             target = next((f for f in FUNCTIONS if name == f or name.startswith(f + ".")), None)
-            if not target or (info & 0x0f) != 2 or size <= 32 or section_index >= shcount:
+            if not target or kind != 2 or size <= 32 or section_index >= shcount:
                 continue
             section = sections[section_index]
             fileoff = section[4] + address - section[3]
@@ -181,7 +198,19 @@ def elf_proof(path: Path, image: bytes) -> tuple[list[dict], dict]:
                      "sha256": hashlib.sha256(code).hexdigest(), "hex": code.hex()}
             if target not in found or (name == target and found[target]["symbol"] != target):
                 found[target] = proof
-    require(set(found) == set(FUNCTIONS), f"missing linked function symbols: {set(FUNCTIONS) - set(found)}")
+    missing = set(FUNCTIONS) - set(found)
+    if missing and diagnostic_path is not None:
+        diagnostic = {"missing_required_symbols": sorted(missing),
+                      "required_rule": "STT_FUNC, exact name or name plus dot suffix, size > 32, bytes in Image",
+                      "symtab_count": len(symbol_tables), "symtabs": symbol_tables,
+                      "candidate_count": len(candidates), "candidate_symbols": candidates,
+                      "elf_sections": {"count": shcount, **named_sections},
+                      "text_base_symbol": hex_number(text_base) if text_base is not None else None}
+        diagnostic_path.write_text(json.dumps(diagnostic, indent=2) + "\n")
+        print(json.dumps({"missing_required_symbols": sorted(missing),
+                          "symtabs": symbol_tables, "candidate_count": len(candidates),
+                          "first_candidates": candidates[:120]}, indent=2), flush=True)
+    require(not missing, f"missing linked function symbols: {missing}")
     require(text_base is not None, "_text ELF symbol missing")
     metadata = {"text_base": hex_number(text_base), "sections": named_sections,
                 "load_segments": loads,
@@ -204,6 +233,13 @@ def disassemble(vmlinux: Path, functions: list[dict], output: Path) -> None:
     output.write_text("\n".join(parts))
 
 
+def write_small_sums(evidence: Path, kernel_only: Path) -> None:
+    small = sorted(p for p in evidence.iterdir() if p.is_file() and p.name != "SMALL_SHA256SUMS.txt")
+    (evidence / "SMALL_SHA256SUMS.txt").write_text(
+        "".join(f"{sha256(path)}  {path.name}\n" for path in small)
+        + f"{sha256(kernel_only / ZIP_NAME)}  ../kernel-40971-5-only/{ZIP_NAME}\n")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, required=True, help="downloaded original artifact directory")
@@ -216,15 +252,27 @@ def main() -> None:
     original_sums = check_original_sums(source)
     manifest = check_manifest(source)
     image, archive_proof = check_archive(source)
-    functions, elf_metadata = elf_proof(source / "vmlinux", image)
     require(not args.kernel_only.exists() and not args.evidence.exists(), "output directory already exists")
     args.kernel_only.mkdir(parents=True)
     args.evidence.mkdir(parents=True)
     shutil.copy2(source / ZIP_NAME, args.kernel_only / ZIP_NAME)
+    require(sha256(args.kernel_only / ZIP_NAME) == original_sums[ZIP_NAME], "exported ZIP hash differs")
     for name in (MANIFEST_NAME, "SHA256SUMS.txt", "kernel.config", "gki_defconfig",
                  "build-result.json", RESOLVED_NAME):
         shutil.copy2(source / name, args.evidence / name)
-    disassemble(source / "vmlinux", functions, args.evidence / "aarch64-functions.disasm.txt")
+    status_file = args.evidence / "inspection-status.json"
+    status = {"source_run_id": args.build_run_id, "preliminary_artifact_checks_passed": True,
+              "binary_validation_completed": False,
+              "note": "ZIP is original and hash verified; binary function evidence remains incomplete"}
+    status_file.write_text(json.dumps(status, indent=2) + "\n")
+    print("Original ZIP/hash/config/manifest verified and copied; binary inspection pending", flush=True)
+    try:
+        functions, elf_metadata = elf_proof(source / "vmlinux", image,
+                                            args.evidence / "symbol-diagnostic.json")
+        disassemble(source / "vmlinux", functions, args.evidence / "aarch64-functions.disasm.txt")
+    except Exception:
+        write_small_sums(args.evidence, args.kernel_only)
+        raise
     proof = {"source_run_id": args.build_run_id, "source_artifact": "official-40971-5-uapi5-susfs",
              "original_sha256sums_verified": True, "original_files": original_sums,
              "manifest_pins_verified": PINS, "manifest_target": manifest["target"],
@@ -232,11 +280,10 @@ def main() -> None:
              "elf_address_metadata": elf_metadata,
              "scope": "artifact/config/link validation only; no device boot, root, or SuSFS runtime acceptance"}
     (args.evidence / "binary-proof.json").write_text(json.dumps(proof, indent=2) + "\n")
-    small = sorted(p for p in args.evidence.iterdir() if p.is_file())
-    (args.evidence / "SMALL_SHA256SUMS.txt").write_text(
-        "".join(f"{sha256(path)}  {path.name}\n" for path in small)
-        + f"{sha256(args.kernel_only / ZIP_NAME)}  ../kernel-40971-5-only/{ZIP_NAME}\n")
-    require(sha256(args.kernel_only / ZIP_NAME) == original_sums[ZIP_NAME], "exported ZIP hash differs")
+    status["binary_validation_completed"] = True
+    status["note"] = "All linked function bytes match the packaged Image; no device runtime claim"
+    status_file.write_text(json.dumps(status, indent=2) + "\n")
+    write_small_sums(args.evidence, args.kernel_only)
     print(json.dumps({"source_run_id": args.build_run_id, "archive_sha256": archive_proof["archive_sha256"],
                       "functions": [f["symbol"] for f in functions],
                       "evidence_files": [p.name for p in args.evidence.iterdir()]}, indent=2))

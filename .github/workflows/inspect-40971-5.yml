@@ -43,18 +43,20 @@ jobs:
             --evidence kernel-40971-5-evidence \
             --build-run-id "$SOURCE_BUILD_RUN"
 
-      - name: Upload original kernel ZIP only
+      - name: Upload prechecked original kernel ZIP only
+        if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
           name: kernel-40971-5-only
           path: kernel-40971-5-only/
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 7
 
       - name: Upload compact evidence without vmlinux
+        if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
           name: kernel-40971-5-evidence
           path: kernel-40971-5-evidence/
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 7
