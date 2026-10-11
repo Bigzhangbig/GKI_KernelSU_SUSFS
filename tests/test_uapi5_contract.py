@@ -242,7 +242,9 @@ int event_case(int x) {
 
 def header_compiler(ndk: Path, host_header: bool) -> tuple[list[str], str]:
     if host_header:
-        return [os.environ.get("CC", "cc")], "Host"
+        # Linux userspace UAPI headers may leave the kernel pointer annotation
+        # undefined; Android's NDK linux/compiler.h already makes it empty.
+        return [os.environ.get("CC", "cc"), "-D__user="], "Host"
     clang_candidates = list((ndk / "toolchains/llvm/prebuilt").glob("*/bin/clang"))
     if not clang_candidates:
         raise FileNotFoundError(f"Android NDK clang missing under {ndk}")
