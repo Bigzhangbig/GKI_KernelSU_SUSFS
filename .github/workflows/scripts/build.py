@@ -77,6 +77,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--verbose", "-v", action="store_true")
     parser.add_argument("--output-json")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--official-40971-5", action="store_true", help="Build the pinned 40971-5 UAPI5 GKI target")
 
     return parser.parse_args()
 
@@ -98,6 +99,7 @@ def create_build_config(args: argparse.Namespace) -> BuildConfig:
         make_release=not args.no_release,
         custom_version=args.custom_version,
         revision=args.revision,
+        official_40971_5=args.official_40971_5,
     )
 
 
@@ -241,6 +243,10 @@ def main():
 
     if not args.all and not args.matrix and not args.android:
         logger.error("请指定 --all, --matrix 或 --android")
+        return 1
+
+    if args.official_40971_5 and (args.all or args.matrix):
+        logger.error("40971-5 profile supports only a single explicit build")
         return 1
 
     workspace = args.workspace

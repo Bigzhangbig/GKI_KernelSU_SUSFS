@@ -95,6 +95,13 @@ LEGACY_FIXES = {
 OP8E_PATCH_URL = "https://github.com/zzh20188/GKI_KernelSU_SUSFS/raw/refs/heads/dev/hmbird_patch.c"
 KPM_PATCH_URL = "https://raw.githubusercontent.com/ShirkNeko/SukiSU_patch/refs/heads/main/kpm/patch_linux"
 
+# This profile is tied to the official android12-5.10.209 (2024-05) GKI source.
+OFFICIAL_40971_5_KSU_COMMIT = "6c284e957feaa9a388a9f1c37dc4ec80d95e434b"
+OFFICIAL_40971_5_SUSFS_COMMIT = "9892175b4acec7ee844e113b8d02c0f4d12cdfac"
+OFFICIAL_40971_5_SUKISU_PATCH_COMMIT = "547ae94bcaec53d030398f857950c64662043a5d"
+OFFICIAL_40971_5_COMMON_COMMIT = "f0826289c51653ee116c20c1dda9c87ad8a30636"
+OFFICIAL_40971_5_TUPLE = ("android12", "5.10", "209", "2024-05")
+
 
 @dataclass
 class BuildConfig:
@@ -114,6 +121,7 @@ class BuildConfig:
     custom_version: Optional[str] = None
     revision: Optional[str] = None
     build_id: Optional[str] = None
+    official_40971_5: bool = False
 
     def __post_init__(self):
         self._validate_android_version()
@@ -121,6 +129,22 @@ class BuildConfig:
         self._validate_kernel_android_compat()
         self._validate_sub_level()
         self._set_build_id()
+        self._validate_official_40971_5()
+
+    def _validate_official_40971_5(self):
+        if not self.official_40971_5:
+            return
+        actual = (self.android_version, self.kernel_version, self.sub_level, self.os_patch_level)
+        if actual != OFFICIAL_40971_5_TUPLE:
+            raise ValueError(f"40971-5 profile requires {OFFICIAL_40971_5_TUPLE}, got {actual}")
+        if self.kernelsu_commit != OFFICIAL_40971_5_KSU_COMMIT:
+            raise ValueError("40971-5 profile requires the pinned KernelSU commit")
+        if self.susfs_commit != OFFICIAL_40971_5_SUSFS_COMMIT:
+            raise ValueError("40971-5 profile requires the pinned SUSFS commit")
+        if self.revision != "r13":
+            raise ValueError("40971-5 profile requires the certified r13 revision")
+        if self.use_kpm or self.make_release:
+            raise ValueError("40971-5 profile requires KPM and release generation to be disabled")
 
     def _validate_android_version(self):
         valid = [v.value for v in AndroidVersion]
@@ -168,7 +192,7 @@ class BuildConfig:
         return None if self.sub_level == "X" else int(self.sub_level)
 
     def to_dict(self) -> dict:
-        return {
+        data = {
             "android_version": self.android_version,
             "kernel_version": self.kernel_version,
             "sub_level": self.sub_level,
@@ -185,6 +209,9 @@ class BuildConfig:
             "revision": self.revision,
             "build_id": self.build_id,
         }
+        if self.official_40971_5:
+            data.update(official_40971_5=True, susfs_commit=self.susfs_commit)
+        return data
 
 
 def validate_commit_hash(commit_hash: str) -> bool:

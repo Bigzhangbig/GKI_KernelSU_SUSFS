@@ -2,13 +2,22 @@ import os
 import subprocess
 import logging
 import re
+import hashlib
+import json
+import shlex
+import sys
 from pathlib import Path
 from typing import Optional, Callable
 from dataclasses import dataclass, field
 
 from config import (BuildConfig, KSU_REPO_CONFIG, SUSFS_REPO_CONFIG, SUKISU_PATCH_REPO_CONFIG,
                    ANYKERNEL_CONFIG, KERNEL_PATCHES_CONFIG, BBG_CONFIG, TOOLCHAIN_CONFIG,
-                   LEGACY_FIXES, OP8E_PATCH_URL, KPM_PATCH_URL)
+                   LEGACY_FIXES, OP8E_PATCH_URL, KPM_PATCH_URL,
+                   OFFICIAL_40971_5_KSU_COMMIT, OFFICIAL_40971_5_SUSFS_COMMIT,
+                   OFFICIAL_40971_5_SUKISU_PATCH_COMMIT, OFFICIAL_40971_5_COMMON_COMMIT)
+
+OFFICIAL_40971_5_PATCH = Path(__file__).resolve().parent.parent / "patches/sukisu-builtin-6c284e95-uapi5.patch"
+OFFICIAL_40971_5_CONTRACT = Path(__file__).resolve().parents[3] / "tests/test_uapi5_contract.py"
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -137,9 +146,16 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
             self._run_cmd("git fetch origin", check=False)
             self._run_cmd(f"git reset --hard {self.config.susfs_commit}", check=False)
         else:
-            self._run_cmd("git fetch origin", check=False)
-            self._run_cmd(f"git checkout {self.config.susfs_commit}", check=False)
+            self._run_cmd("git fetch origin", check=self.config.official_40971_5)
+            self._run_cmd(f"git checkout {self.config.susfs_commit}", check=self.config.official_40971_5)
+        if self.config.official_40971_5:
+            self._assert_git_head(self.susfs_dir, OFFICIAL_40971_5_SUSFS_COMMIT)
         self._chdir(self.workspace)
+
+    def _assert_git_head(self, repo_dir: Path, expected: str):
+        result = self._run_cmd(f"git -C {shlex.quote(str(repo_dir))} rev-parse HEAD", capture_output=True)
+        if result.stdout.strip() != expected:
+            raise RuntimeError(f"Pinned repository HEAD mismatch: {repo_dir.name}")
 
     def clone_repositories(self):
         logger.info("=== 开始克隆仓库 ===")
@@ -150,24 +166,37 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
             ("Kernel Patches", self.kernel_patches_dir, KERNEL_PATCHES_CONFIG['repo_url'], None),
         ]:
             if not repo_dir.exists():
-                cmd = f"git clone {url}"
-                if branch:
-                    cmd += f" -b {branch}"
+                if self.config.official_40971_5:
+                    cmd = f"git clone {'-b ' + branch if branch else ''} {shlex.quote(url)} {shlex.quote(str(repo_dir))}"
+                else:
+                    cmd = f"git clone {url}"
+                    if branch:
+                        cmd += f" -b {branch}"
                 logger.info(f"克隆 {name}...")
-                self._run_cmd(cmd, check=False)
+                self._run_cmd(cmd, check=self.config.official_40971_5)
+                if self.config.official_40971_5 and not repo_dir.is_dir():
+                    raise RuntimeError(f"{name} clone did not create {repo_dir}")
             else:
                 logger.info(f"{name} 已存在，跳过")
+            if self.config.official_40971_5 and not (repo_dir / ".git").exists():
+                raise RuntimeError(f"{name} is not a Git checkout: {repo_dir}")
         self._apply_susfs_commit()
+        if self.config.official_40971_5:
+            self._chdir(self.sukisu_patch_dir)
+            self._run_cmd("git fetch origin")
+            self._run_cmd(f"git checkout {OFFICIAL_40971_5_SUKISU_PATCH_COMMIT}")
+            self._assert_git_head(self.sukisu_patch_dir, OFFICIAL_40971_5_SUKISU_PATCH_COMMIT)
+            self._chdir(self.workspace)
         logger.info("=== 仓库克隆完成 ===")
 
     def clone_toolchain(self):
         logger.info("=== 克隆工具链 ===")
         if not self.toolchain_dir.exists():
             self._run_cmd(f"git clone {TOOLCHAIN_CONFIG['aosp_mirror']}/kernel/prebuilts/build-tools "
-                         f"-b {TOOLCHAIN_CONFIG['build_tools_branch']} --depth 1 {self.toolchain_dir}", check=False)
+                         f"-b {TOOLCHAIN_CONFIG['build_tools_branch']} --depth 1 {self.toolchain_dir}", check=self.config.official_40971_5)
         if not self.mkbootimg_dir.exists():
             self._run_cmd(f"git clone {TOOLCHAIN_CONFIG['aosp_mirror']}/platform/system/tools/mkbootimg "
-                         f"-b {TOOLCHAIN_CONFIG['mkbootimg_branch']} --depth 1 {self.mkbootimg_dir}", check=False)
+                         f"-b {TOOLCHAIN_CONFIG['mkbootimg_branch']} --depth 1 {self.mkbootimg_dir}", check=self.config.official_40971_5)
         self.env["AVBTOOL"] = str(self.toolchain_dir / "linux-x86/bin/avbtool")
         self.env["MKBOOTIMG"] = str(self.mkbootimg_dir / "mkbootimg.py")
         self.env["UNPACK_BOOTIMG"] = str(self.mkbootimg_dir / "unpack_bootimg.py")
@@ -182,8 +211,11 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
         repo_dir.mkdir(exist_ok=True)
         repo_path = repo_dir / "repo"
         if not repo_path.exists():
-            self._run_cmd(f"curl https://storage.googleapis.com/git-repo-downloads/repo > {repo_path}", check=False)
-            self._run_cmd(f"chmod a+rx {repo_path}", check=False)
+            curl_flags = "-fLSs" if self.config.official_40971_5 else ""
+            self._run_cmd(f"curl {curl_flags} https://storage.googleapis.com/git-repo-downloads/repo > {repo_path}", check=self.config.official_40971_5)
+            self._run_cmd(f"chmod a+rx {repo_path}", check=self.config.official_40971_5)
+        if self.config.official_40971_5 and repo_path.stat().st_size == 0:
+            raise RuntimeError("repo tool download is empty")
         self.env["REPO"] = str(repo_path)
         self.shell.env = self.env
 
@@ -193,10 +225,14 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
         formatted_branch = self.config.formatted_branch
 
         self._run_cmd(f"$REPO init --depth=1 -u https://android.googlesource.com/kernel/manifest "
-                     f"-b common-{formatted_branch} --repo-rev=v2.16", check=False)
+                     f"-b common-{formatted_branch} --repo-rev=v2.16", check=self.config.official_40971_5)
 
-        remote = subprocess.run(f"git ls-remote https://android.googlesource.com/kernel/common {formatted_branch}",
-                               shell=True, capture_output=True, text=True).stdout.strip()
+        remote_result = subprocess.run(
+            ["git", "ls-remote", "https://android.googlesource.com/kernel/common", formatted_branch],
+            capture_output=True, text=True, check=self.config.official_40971_5)
+        remote = remote_result.stdout.strip()
+        if self.config.official_40971_5 and not remote:
+            raise RuntimeError(f"GKI branch is missing: {formatted_branch}")
         if "deprecated" in remote:
             manifest_path = self.work_dir / ".repo/manifests/default.xml"
             with open(manifest_path, "r") as f:
@@ -207,11 +243,18 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
 
         self.env["REMOTE_BRANCH"] = remote
         logger.info("同步内核源代码...")
-        self._run_cmd("$REPO --trace sync -c -j$(nproc --all) --no-tags --fail-fast", check=False)
+        self._run_cmd("$REPO --trace sync -c -j$(nproc --all) --no-tags --fail-fast", check=self.config.official_40971_5)
 
         common_dir = self.work_dir / "common"
         if not common_dir.exists():
             raise RuntimeError("repo sync 失败，common 目录不存在")
+        if self.config.official_40971_5:
+            self._run_cmd(f"git -C {shlex.quote(str(common_dir))} checkout --detach {OFFICIAL_40971_5_COMMON_COMMIT}")
+            self._assert_git_head(common_dir, OFFICIAL_40971_5_COMMON_COMMIT)
+            resolved_manifest = self.work_dir / "40971-5-resolved-manifest.xml"
+            self._run_cmd(f"$REPO manifest -r -o {shlex.quote(str(resolved_manifest))}")
+            if not resolved_manifest.is_file() or resolved_manifest.stat().st_size == 0:
+                raise RuntimeError("Resolved GKI manifest was not produced")
         self._apply_legacy_fixes(remote)
         logger.info("=== 内核源代码同步完成 ===")
 
@@ -250,13 +293,51 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
         self._chdir(self.work_dir)
         setup_url = (f"https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/{self.config.kernelsu_commit}/kernel/setup.sh"
                     if self.config.kernelsu_commit else KSU_REPO_CONFIG["setup_script"])
-        self._run_cmd(f"curl -LSs {setup_url} | bash -s builtin", check=False)
+        if self.config.official_40971_5:
+            setup_file = self.work_dir / "sukisu-setup.sh"
+            self._run_cmd(f"curl -fLSs {shlex.quote(setup_url)} -o {shlex.quote(str(setup_file))}")
+            self._run_cmd(f"bash {shlex.quote(str(setup_file))} {OFFICIAL_40971_5_KSU_COMMIT}")
+        else:
+            self._run_cmd(f"curl -LSs {setup_url} | bash -s builtin", check=False)
         if self.config.kernelsu_commit:
             ksu_dir = self.work_dir / "KernelSU"
             if ksu_dir.exists():
                 self._chdir(ksu_dir)
-                self._run_cmd(f"git checkout {self.config.kernelsu_commit}", check=False)
+                self._run_cmd(f"git checkout {self.config.kernelsu_commit}", check=self.config.official_40971_5)
+                if self.config.official_40971_5:
+                    self._assert_git_head(ksu_dir, OFFICIAL_40971_5_KSU_COMMIT)
                 self._chdir(self.work_dir)
+            elif self.config.official_40971_5:
+                raise RuntimeError("KernelSU setup did not create the pinned source tree")
+
+    def apply_official_40971_5_patch(self):
+        if not self.config.official_40971_5:
+            return
+        ksu_dir = self.work_dir / "KernelSU"
+        header = ksu_dir / "kernel/include/uapi/supercall.h"
+        if not OFFICIAL_40971_5_PATCH.is_file():
+            raise RuntimeError(f"Required UAPI5 patch is missing: {OFFICIAL_40971_5_PATCH}")
+        if not header.is_file() or not re.search(r'DECLARE\(__u32, KERNEL_SU_UAPI_VERSION, 2\)', header.read_text()):
+            raise RuntimeError("Pinned KernelSU source is not the expected UAPI2 baseline")
+        self._chdir(ksu_dir)
+        patch = shlex.quote(str(OFFICIAL_40971_5_PATCH))
+        self._run_cmd(f"git apply --check {patch}")
+        self._run_cmd(f"git apply {patch}")
+        makefile = ksu_dir / "kernel/Makefile"
+        old_line = "KSU_VERSION     := $(if $(LOCAL_COUNT),$(shell expr $(VERSION_BASE) + $(LOCAL_COUNT) - $(VERSION_OFFSET)),13000)"
+        content = makefile.read_text()
+        if content.count(old_line) != 1:
+            raise RuntimeError("Pinned KernelSU Makefile version formula changed")
+        makefile.write_text(content.replace(old_line, "KSU_VERSION     := 40971"))
+        self._chdir(self.work_dir)
+
+    def test_official_40971_5_contract(self):
+        if not self.config.official_40971_5:
+            return
+        if not OFFICIAL_40971_5_CONTRACT.is_file():
+            raise RuntimeError(f"Required UAPI5 contract test is missing: {OFFICIAL_40971_5_CONTRACT}")
+        self._run_cmd(f"{shlex.quote(sys.executable)} {shlex.quote(str(OFFICIAL_40971_5_CONTRACT))} "
+                      f"--source {shlex.quote(str(self.work_dir / 'KernelSU'))} --host-header")
 
     def add_bbg(self):
         if not self.config.use_bbg:
@@ -286,27 +367,33 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
         self._chdir(self.work_dir)
         common_dir = self.work_dir / "common"
         susfs_patch = self.susfs_dir / "kernel_patches" / self.config.get_susfs_patch_filename()
+        if self.config.official_40971_5 and not susfs_patch.is_file():
+            raise RuntimeError(f"Required SUSFS patch is missing: {susfs_patch}")
         if susfs_patch.exists():
-            self._run_cmd(f"cp {susfs_patch} {common_dir}/", check=False)
+            self._run_cmd(f"cp {susfs_patch} {common_dir}/", check=self.config.official_40971_5)
         for src, dst in [
             (self.susfs_dir / "kernel_patches/fs", common_dir / "fs/"),
             (self.susfs_dir / "kernel_patches/include/linux", common_dir / "include/linux/"),
         ]:
+            if self.config.official_40971_5 and not src.is_dir():
+                raise RuntimeError(f"Required SUSFS source is missing: {src}")
             if src.exists():
-                self._run_cmd(f"cp -r {src}/* {dst}", check=False)
+                self._run_cmd(f"cp -r {src}/* {dst}", check=self.config.official_40971_5)
         if susfs_patch.exists():
             patch_file = common_dir / self.config.get_susfs_patch_filename()
             if patch_file.exists():
                 self._chdir(common_dir)
-                self._run_cmd(f"patch -p1 --fuzz=3 < {patch_file}", check=False)
+                self._run_cmd(f"patch -p1 --fuzz=3 < {patch_file}", check=self.config.official_40971_5)
                 self._chdir(self.work_dir)
 
     def apply_sukisu_patches(self):
         logger.info("=== 应用 SukiSU 补丁 ===")
         self._chdir(self.work_dir / "common")
         hooks_patch = self.sukisu_patch_dir / "69_hide_stuff.patch"
+        if self.config.official_40971_5 and not hooks_patch.is_file():
+            raise RuntimeError(f"Required SukiSU hooks patch is missing: {hooks_patch}")
         if hooks_patch.exists():
-            self._run_cmd(f"cp {hooks_patch} . && patch -p1 -F 3 < 69_hide_stuff.patch", check=False)
+            self._run_cmd(f"cp {hooks_patch} . && patch -p1 -F 3 < 69_hide_stuff.patch", check=self.config.official_40971_5)
 
     def apply_zram_patches(self):
         if not self.config.use_zram:
@@ -406,11 +493,15 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
         self._chdir(self.work_dir)
         config_file = self.work_dir / "common/arch/arm64/configs/gki_defconfig"
         if not config_file.exists():
+            if self.config.official_40971_5:
+                raise RuntimeError(f"Required kernel config is missing: {config_file}")
             logger.warning(f"配置文件不存在: {config_file}")
             return
 
         with open(config_file, "a") as f:
             f.write(self.KERNEL_CONFIG_TEMPLATE)
+            if self.config.official_40971_5 and not self.config.use_kpm:
+                f.write("CONFIG_KPM=n\n")
             if self.config.kernel_version != "6.6":
                 f.write("CONFIG_KSU_SUSFS_SUS_PATH=y\n")
             else:
@@ -431,6 +522,107 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
             content = content.replace("check_defconfig", "")
             with open(build_config, "w") as f:
                 f.write(content)
+
+    def verify_official_40971_5_sources(self):
+        if not self.config.official_40971_5:
+            return
+        common = self.work_dir / "common"
+        ksu = self.work_dir / "KernelSU/kernel"
+        expected_text = {
+            ksu / "include/uapi/supercall.h": [
+                r"DECLARE\(__u32, KERNEL_SU_UAPI_VERSION, 5\)",
+                r"DECLARE\(__u32, KSU_GET_INFO_FLAG_BUNDLED, \(1U << 4\)\)",
+            ],
+            ksu / "Makefile": [r"(?m)^KSU_VERSION\s*:= 40971$"],
+            ksu / "supercall/dispatch.c": [
+                r"case EVENT_SERVICES:\s*\{.*?services_started = true;.*?return 1;",
+                r"\.cmd = KSU_IOCTL_GET_WRAPPER_FD,[^}]*\.allow_su_session = true",
+                r"\.cmd = KSU_IOCTL_DISABLE_ESCAPE_TO_ROOT,[^}]*\.allow_su_session = true",
+                r"ksu_ioctl_handlers\[i\]\.allow_su_session && ksu_is_su_session_fd\(filp\)",
+            ],
+            ksu / "infra/file_wrapper.c": [
+                r"old_cred = override_creds\(ksu_cred\);\s*wrapper_file = .*?;\s*revert_creds\(old_cred\);",
+            ],
+            ksu / "manager/apk_sign.c": [
+                r'\{\s*0x35c,\s*"947ae944f3de4ed4c21a7e4f7953ecf351bfa2b36239da37a34111ad29993eef"\s*\}',
+            ],
+            ksu / "feature/sucompat.c": [
+                r"int ksu_handle_execveat_sucompat\(.*?if \(!\(__ksu_is_allow_uid_for_current\(current_uid\(\)\.val\)\)\)\s*return -EINVAL;",
+                r"if \(current_chrooted\(\)\).*?return -EINVAL;",
+                r"if \(ret\) \{.*?return -EINVAL;.*?\}\s*return 0;",
+                r"int ksu_handle_post_execveat_sucompat\(.*?if \(\*retval >= 0\) \{\s*\(void\)ksu_install_su_fd\(\);",
+            ],
+            common / "fs/exec.c": [
+                r"bool is_su_session = false;",
+                r"if \(likely\(susfs_is_current_proc_no_su\(\)\)\)\s*goto orig_flow;",
+                r"if \(static_branch_likely\(&ksu_su_compat_enabled\)\)",
+                r"is_su_session = !ksu_handle_execveat\(&fd, &filename, &argv, &envp, &flags\);",
+                r"is_su_session = !ksu_handle_execveat_sucompat\(&fd, &filename, &argv, &envp, &flags\);",
+                r"retval = bprm_execve\(bprm, fd, filename, flags\);\s*#ifdef CONFIG_KSU_SUSFS\s*if \(unlikely\(is_su_session\)\)\s*\(void\)ksu_handle_post_execveat_sucompat\(&fd, &filename, &argv, &envp, &flags, &retval\);",
+            ],
+            common / "include/linux/susfs.h": [r'#define\s+SUSFS_VERSION\s+"v2\.3\.0"'],
+            common / "arch/arm64/configs/gki_defconfig": [r"(?m)^CONFIG_KSU=y$", r"(?m)^CONFIG_KSU_SUSFS=y$"],
+            common / "Makefile": [r"(?m)^VERSION = 5$", r"(?m)^PATCHLEVEL = 10$", r"(?m)^SUBLEVEL = 209$"],
+        }
+        for path, patterns in expected_text.items():
+            if not path.is_file():
+                raise RuntimeError(f"Required target source is missing: {path}")
+            content = path.read_text()
+            for pattern in patterns:
+                if not re.search(pattern, content, re.DOTALL):
+                    raise RuntimeError(f"40971-5 source verification failed: {path.name}: {pattern}")
+        # A later `CONFIG_FOO=n` in defconfig overrides an earlier enabled line.
+        config_lines = (common / "arch/arm64/configs/gki_defconfig").read_text().splitlines()
+        for key in ("CONFIG_KSU", "CONFIG_KSU_SUSFS"):
+            values = [line for line in config_lines if line.startswith(key + "=")]
+            if not values or values[-1] != key + "=y":
+                raise RuntimeError(f"40971-5 requires effective {key}=y")
+
+    def write_official_40971_5_manifest(self):
+        if not self.config.official_40971_5:
+            return
+        self._assert_git_head(self.work_dir / "common", OFFICIAL_40971_5_COMMON_COMMIT)
+        self._assert_git_head(self.work_dir / "KernelSU", OFFICIAL_40971_5_KSU_COMMIT)
+        self._assert_git_head(self.susfs_dir, OFFICIAL_40971_5_SUSFS_COMMIT)
+        self._assert_git_head(self.sukisu_patch_dir, OFFICIAL_40971_5_SUKISU_PATCH_COMMIT)
+        def git_head(path: Path) -> str:
+            return self._run_cmd(f"git -C {shlex.quote(str(path))} rev-parse HEAD", capture_output=True).stdout.strip()
+
+        makefile = self.work_dir / "KernelSU/kernel/Makefile"
+        setup_file = self.work_dir / "sukisu-setup.sh"
+        resolved_manifest = self.work_dir / "40971-5-resolved-manifest.xml"
+        manifest = {
+            "target": "android12-5.10.209-2024-05 / KernelSU 40971 / UAPI 5 / SUSFS 2.3.0",
+            "common_commit": OFFICIAL_40971_5_COMMON_COMMIT,
+            "kernelsu_commit": OFFICIAL_40971_5_KSU_COMMIT,
+            "susfs_commit": OFFICIAL_40971_5_SUSFS_COMMIT,
+            "sukisu_patch_commit": OFFICIAL_40971_5_SUKISU_PATCH_COMMIT,
+            "anykernel_commit": git_head(self.anykernel_dir),
+            "manifest_commit": git_head(self.work_dir / ".repo/manifests"),
+            "resolved_toolchain_manifest_sha256": hashlib.sha256(resolved_manifest.read_bytes()).hexdigest(),
+            "uapi_patch_sha256": hashlib.sha256(OFFICIAL_40971_5_PATCH.read_bytes()).hexdigest(),
+            "setup_script_sha256": hashlib.sha256(setup_file.read_bytes()).hexdigest(),
+            "kernel_makefile_sha256": hashlib.sha256(makefile.read_bytes()).hexdigest(),
+            "kernel_makefile_version_change": "replace upstream LOCAL_COUNT formula with KSU_VERSION := 40971",
+            "build_config": self.config.to_dict(),
+        }
+        (self.work_dir / "40971-5-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+
+    def verify_official_40971_5_outputs(self) -> Path:
+        dist = self.work_dir / "out/android12-5.10/dist"
+        image = dist / "Image"
+        for output in (image, dist / "vmlinux", dist / "System.map"):
+            if not output.is_file() or output.stat().st_size == 0:
+                raise RuntimeError(f"40971-5 build did not produce {output.name}")
+        generated_config = self.work_dir / "out/android12-5.10/common/.config"
+        if not generated_config.is_file():
+            raise RuntimeError("40971-5 generated common/.config is missing")
+        config_lines = generated_config.read_text().splitlines()
+        if not all(f"{key}=y" in config_lines for key in ("CONFIG_KSU", "CONFIG_KSU_SUSFS")):
+            raise RuntimeError("40971-5 generated .config does not enable KernelSU and SUSFS")
+        if any(f"{key}=y" in config_lines for key in ("CONFIG_KSU_DEBUG", "CONFIG_KPM")):
+            raise RuntimeError("40971-5 generated .config unexpectedly enables KSU_DEBUG or KPM")
+        return image
 
     def _configure_zram(self):
         config_file = self.work_dir / "common/arch/arm64/configs/gki_defconfig"
@@ -716,10 +908,13 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
             if not image_path.exists():
                 continue
             zip_name = f"{self.config.android_version}-{self.config.kernel_version}.{self.config.sub_level}-{self.config.os_patch_level}-AnyKernel3{suffix}.zip"
-            self._run_cmd(f"cp {image_path} {ak3_dir}/", check=False)
+            self._run_cmd(f"cp {image_path} {ak3_dir}/", check=self.config.official_40971_5)
             self._chdir(ak3_dir)
-            self._run_cmd(f"zip -r ../{zip_name} ./*", check=False)
-            self._run_cmd(f"rm {ak3_dir}/{image_file}", check=False)
+            zip_path = self.work_dir / zip_name if self.config.official_40971_5 else Path("..") / zip_name
+            self._run_cmd(f"zip -r {shlex.quote(str(zip_path))} ./*", check=self.config.official_40971_5)
+            self._run_cmd(f"rm {ak3_dir}/{image_file}", check=self.config.official_40971_5)
+            if self.config.official_40971_5 and not (self.work_dir / zip_name).is_file():
+                raise RuntimeError("AnyKernel3 packaging did not produce a ZIP")
             artifacts.append(str(self.work_dir / zip_name))
             self._chdir(self.work_dir)
         return artifacts
@@ -732,18 +927,24 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
         logger.info("=" * 50)
 
         try:
+            if self.config.official_40971_5 and (self.work_dir / "out").exists():
+                raise RuntimeError("40971-5 target requires a fresh output directory")
             self.clone_repositories()
-            self.clone_toolchain()
+            if not self.config.official_40971_5:
+                self.clone_toolchain()
             self.setup_repo_tool()
             self.init_and_sync_kernel()
             self.add_kernel_supatch()
             self.add_kernelsu()
+            self.apply_official_40971_5_patch()
+            self.test_official_40971_5_contract()
             self.add_bbg()
             self.apply_susfs_patches()
             self.apply_sukisu_patches()
             self.apply_zram_patches()
             self.apply_task_mmu_fixes()
             self.configure_kernel()
+            self.verify_official_40971_5_sources()
             self.configure_kernel_name()
             self.show_kernel_config()
 
@@ -752,8 +953,17 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
 
             self.patch_kpm_image()
             artifacts = []
-            artifacts.extend(self.prepare_boot_images())
+            if not self.config.official_40971_5:
+                artifacts.extend(self.prepare_boot_images())
+            else:
+                image = self.verify_official_40971_5_outputs()
+                self._run_cmd(f"cp {shlex.quote(str(image))} {shlex.quote(str(self.work_dir / 'Image'))}")
             artifacts.extend(self.create_anykernel_zips())
+            if self.config.official_40971_5:
+                if not artifacts or any(not Path(artifact).is_file() for artifact in artifacts):
+                    raise RuntimeError("40971-5 AnyKernel3 artifact is missing")
+                self.write_official_40971_5_manifest()
+                artifacts.append(str(self.work_dir / "40971-5-manifest.json"))
 
             build_time = time.time() - start_time
             logger.info(f"构建成功! 耗时: {build_time:.2f} 秒, 生成 {len(artifacts)} 个产物")
