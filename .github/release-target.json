@@ -1,0 +1,26 @@
+{
+  "tag": "v4.2.1",
+  "release_commit": "fd2a85151c8312fd9b4237db9ba827dcea692228",
+  "version": 40994,
+  "uapi": 5,
+  "features": 7,
+  "kernelsu_commit": "ee35e65428054476c279eae59f7f2bba272040b9",
+  "susfs_commit": "9892175b4acec7ee844e113b8d02c0f4d12cdfac",
+  "susfs_version": "2.3.0",
+  "patch_commit": "547ae94bcaec53d030398f857950c64662043a5d",
+  "common_commit": "f0826289c51653ee116c20c1dda9c87ad8a30636",
+  "anykernel_commit": "e1e9dce98430c5c6f231f7094a8c7f4ecaf50948",
+  "kernel_tuple": [
+    "android12",
+    "5.10",
+    "209",
+    "2024-05"
+  ],
+  "revision": "r13",
+  "apk_name": "SukiSU_v4.2.1_40994-release.apk",
+  "apk_sha256": "c7f69280cf468e8415c585ff31f963d0147386831217a1e89b822afddc5f40ed",
+  "manager_certificate_sha256": "947ae944f3de4ed4c21a7e4f7953ecf351bfa2b36239da37a34111ad29993eef",
+  "backend_tag": "v4.2.1",
+  "manager_version": 40994,
+  "source_fingerprint": "f85cff897e1ad2852f85c84949e803ca3415e0515b598410f303edf34dc5ac5d"
+}

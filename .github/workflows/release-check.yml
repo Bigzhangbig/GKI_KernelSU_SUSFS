@@ -1,0 +1,57 @@
+name: Release checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install source contract and APK inspection dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential linux-libc-dev git gh apksigner
+      - name: Run regression tests
+        run: python -m unittest discover -s tests -v
+      - name: Verify the latest official Release and its APK
+        run: python .github/workflows/scripts/build.py --dry-run --output-json release-check.json
+      - name: Check actual pinned builtin C source and ABI
+        run: |
+          python - <<'PY'
+          import subprocess
+          import sys
+          sys.path.insert(0, '.github/workflows/scripts')
+          from config import BuildConfig
+          from kernel_builder import KernelBuilder
+          builder = KernelBuilder(BuildConfig(), '/tmp/gki-release-contract')
+          source = builder.work_dir / 'KernelSU'
+          subprocess.run(['git', 'init', '-q', str(source)], check=True)
+          subprocess.run(['git', '-C', str(source), 'remote', 'add', 'origin',
+                          'https://github.com/SukiSU-Ultra/SukiSU-Ultra.git'], check=True)
+          subprocess.run(['git', '-C', str(source), 'fetch', '--depth=1', 'origin',
+                          builder.config.target.kernelsu_commit], check=True)
+          subprocess.run(['git', '-C', str(source), 'checkout', '--detach', 'FETCH_HEAD'], check=True)
+          builder._assert_git_head(source, builder.config.target.kernelsu_commit)
+          builder.apply_pinned_patch()
+          builder.test_pinned_contract()
+          PY
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-check
+          path: release-check.json
+          if-no-files-found: error
+          retention-days: 7

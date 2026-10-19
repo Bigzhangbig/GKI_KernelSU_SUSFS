@@ -1,112 +1,18 @@
 name: Kernel Build
 
-permissions:
-  contents: write
-  actions: write
-
 on:
   workflow_dispatch:
-    inputs:
-      android_version:
-        description: 'Android 版本'
-        required: true
-        type: choice
-        options:
-          - android12
-          - android13
-          - android14
-          - android15
-        default: android13
-      kernel_version:
-        description: 'Kernel 版本'
-        required: true
-        type: choice
-        options:
-          - "5.10"
-          - "5.15"
-          - "6.1"
-          - "6.6"
-        default: "5.15"
-      sub_level:
-        description: 'Sub Level 版本'
-        required: true
-        type: string
-        default: '124'
-      os_patch_level:
-        description: 'OS Patch Level'
-        required: true
-        type: string
-        default: '2025-02'
-      revision:
-        description: 'Android 12 Revision (可选)'
-        required: false
-        type: string
-        default: ''
-      kernelsu_version:
-        description: 'SukiSU 版本'
-        required: true
-        type: choice
-        options:
-          - Stable(标准)
-          - Dev(开发)
-        default: Stable(标准)
-      kernelsu_commit:
-        description: '指定 KernelSU commit hash (可选)'
-        required: false
-        type: string
-        default: ''
-      susfs_commit:
-        description: '指定 SUSFS commit hash'
-        required: false
-        type: string
-        default: ''
-      custom_version:
-        description: '自定义版本名称 (可选)'
-        required: false
-        type: string
-        default: ''
-      use_zram:
-        description: '启用 ZRAM (LZ4KD)'
-        required: true
-        type: boolean
-        default: false
-      use_kpm:
-        description: '启用 KPM'
-        required: true
-        type: boolean
-        default: true
-      BBG:
-        description: '启用 Baseband-guard'
-        required: true
-        type: boolean
-        default: false
-      supp_op:
-        description: '启用 OnePlus 8E 支持'
-        required: true
-        type: boolean
-        default: false
-      set_defbbr:
-        description: '设置 BBR 为默认拥塞算法'
-        required: true
-        type: boolean
-        default: false
-      make_release:
-        description: '创建 GitHub Release'
-        required: true
-        type: boolean
-        default: true
-      send_telegram:
-        description: '发送 Telegram 通知'
-        required: true
-        type: boolean
-        default: true
+
+permissions:
+  contents: read
 
 env:
-  PYTHON_VERSION: '3.10'
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
     steps:
       - name: Maximize build space
         uses: AdityaGarg8/remove-unwanted-software@v5
@@ -118,93 +24,76 @@ jobs:
           remove-docker-images: 'true'
           remove-large-packages: 'true'
           remove-swapfile: 'true'
-          verbose: 'true'
-
-      - name: Checkout code
-        uses: actions/checkout@v6
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Install dependencies
+          python-version: '3.12'
+      - name: Install build and Release inspection dependencies
         run: |
-          sudo apt update && sudo apt upgrade -y
-          sudo apt install -y ccache python3 git curl wget zip unzip
-          pip install PyYAML
-
+          sudo apt-get update
+          sudo apt-get install -y build-essential linux-libc-dev bc bison flex libssl-dev libelf-dev \
+            ccache git gh curl wget zip unzip xz-utils openssl pixz binutils-aarch64-linux-gnu apksigner
+      - name: Verify build integration
+        run: python -m unittest discover -s tests -v
       - name: Configure ccache
         run: |
-          mkdir -p ~/.cache/bazel
-          ccache --version
+          mkdir -p ~/.ccache
           ccache --max-size=2G
           ccache --set-config=compression=true
-          echo "CCACHE_DIR=$HOME/.ccache" >> $GITHUB_ENV
-
-      - name: Restore ccache
-        uses: actions/cache@v5
+          echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
+      - uses: actions/cache@v5
         with:
           path: ~/.ccache
-          key: ${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.sub_level }}-ccache-${{ github.sha }}
-          restore-keys: |
-            ${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.sub_level }}-ccache-
-
-      - name: Build kernel
+          key: release-ccache-${{ github.sha }}
+          restore-keys: release-ccache-
+      - name: Build the latest compatible official Release
         run: |
-          cd ./.github/workflows/scripts
-
-          ARGS="--android ${{ github.event.inputs.android_version }}"
-          ARGS="$ARGS --kernel ${{ github.event.inputs.kernel_version }}"
-          ARGS="$ARGS --sub-level ${{ github.event.inputs.sub_level }}"
-          ARGS="$ARGS --os-patch ${{ github.event.inputs.os_patch_level }}"
-          [ -n "${{ github.event.inputs.revision }}" ] && ARGS="$ARGS --revision ${{ github.event.inputs.revision }}"
-          ARGS="$ARGS --ksu-version ${{ github.event.inputs.kernelsu_version }}"
-
-          [ "${{ github.event.inputs.use_zram }}" = "true" ] && ARGS="$ARGS --zram"
-          [ "${{ github.event.inputs.use_kpm }}" = "false" ] && ARGS="$ARGS --no-kpm"
-          [ "${{ github.event.inputs.BBG }}" = "true" ] && ARGS="$ARGS --bbg"
-          [ "${{ github.event.inputs.supp_op }}" = "true" ] && ARGS="$ARGS --op8e"
-          [ "${{ github.event.inputs.set_defbbr }}" = "true" ] && ARGS="$ARGS --bbr"
-          [ -z "${{ github.event.inputs.kernelsu_commit }}" ] || ARGS="$ARGS --ksu-commit=${{ github.event.inputs.kernelsu_commit }}"
-          [ -z "${{ github.event.inputs.susfs_commit }}" ] || ARGS="$ARGS --susfs-commit=${{ github.event.inputs.susfs_commit }}"
-          [ -z "${{ github.event.inputs.custom_version }}" ] || ARGS="$ARGS --custom-version=${{ github.event.inputs.custom_version }}"
-          [ "${{ github.event.inputs.make_release }}" = "true" ] || ARGS="$ARGS --no-release"
-
-          python3 build.py $ARGS
-
-      - name: Prepare artifacts
+          set -euo pipefail
+          workspace="/tmp/gki-release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          python .github/workflows/scripts/build.py \
+            --workspace "$workspace" --output-json "$workspace/build-result.json"
+      - name: Collect original kernel and exact build evidence
         run: |
-          mkdir -p artifacts
-          find /tmp/gki-build -name "*.zip" -type f -exec cp {} artifacts/ \;
-          find /tmp/gki-build -name "*.img" -type f -exec cp {} artifacts/ \;
-
-      - name: Upload artifacts
+          set -euo pipefail
+          workspace="/tmp/gki-release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          build_dir="$workspace/android12-5.10-209"
+          mkdir -p original
+          cp "$build_dir/android12-5.10.209-2024-05-AnyKernel3.zip" original/
+          cp "$build_dir/release-manifest.json" original/
+          cp "$build_dir/release-target.json" original/
+          cp "$build_dir/release-resolved-manifest.xml" original/
+          cp "$workspace/build-result.json" original/
+          cp "$build_dir/common/arch/arm64/configs/gki_defconfig" original/gki_defconfig
+          cp "$build_dir/out/android12-5.10/common/.config" original/kernel.config
+          cp "$build_dir/out/android12-5.10/dist/vmlinux" original/
+          cp "$build_dir/out/android12-5.10/dist/System.map" original/
+          (cd original && sha256sum ./* > SHA256SUMS.txt)
+      - name: Verify packaged Image and export compact evidence
+        id: inspect
+        run: |
+          python .github/workflows/scripts/inspect_release.py \
+            --input original --kernel-only kernel-release --evidence evidence-release \
+            --build-run-id "$GITHUB_RUN_ID"
+      - name: Upload verified AnyKernel3 ZIP
         uses: actions/upload-artifact@v7
         with:
-          name: kernel-${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.sub_level }}
-          path: artifacts/*
-
-      - name: Generate checksums
-        run: |
-          echo "=== Creating checksums ==="
-          sha256sum artifacts/* > SHA256SUMS.txt
-          cat SHA256SUMS.txt
-
-      - name: Send Telegram Notification
-        if: ${{ github.event.inputs.send_telegram == 'true' && success() }}
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TELEGRAM_MESSAGE_THREAD_ID: ${{ secrets.TELEGRAM_MESSAGE_THREAD_ID }}
-        run: |
-          cd ./.github/workflows/scripts
-          python3 telegram_notify.py single \
-            "${{ github.event.inputs.android_version }}" \
-            "${{ github.event.inputs.kernel_version }}" \
-            "${{ github.event.inputs.sub_level }}" \
-            "${{ github.event.inputs.os_patch_level }}" \
-            "${{ github.event.inputs.kernelsu_version }}" \
-            "${{ github.event.inputs.use_zram }}" \
-            "${{ github.event.inputs.use_kpm }}" \
-            "../../SHA256SUMS.txt"
+          name: kernel-release
+          path: kernel-release/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Preserve failed inspection input
+        if: ${{ failure() && steps.inspect.outcome == 'failure' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: unverified-release-inspection-input
+          path: original/
+          if-no-files-found: warn
+          retention-days: 3
+      - name: Upload compact build and binary evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: evidence-release
+          path: evidence-release/
+          if-no-files-found: warn
+          retention-days: 14
