@@ -46,7 +46,7 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def check_original_sums(source: Path) -> dict[str, str]:
+def check_original_sums(source: Path, original_files: set[str] = ORIGINAL_FILES) -> dict[str, str]:
     sums = {}
     for line in (source / "SHA256SUMS.txt").read_text().splitlines():
         match = re.fullmatch(r"([0-9a-f]{64})\s+\*?(?:\./)?([^/\s]+)", line)
@@ -54,9 +54,9 @@ def check_original_sums(source: Path) -> dict[str, str]:
         digest, name = match.groups()
         require(name not in sums, f"duplicate original checksum: {name}")
         sums[name] = digest
-    require(set(sums) == ORIGINAL_FILES, f"original checksum set differs: {set(sums) ^ ORIGINAL_FILES}")
+    require(set(sums) == original_files, f"original checksum set differs: {set(sums) ^ original_files}")
     actual = {p.name for p in source.iterdir() if p.is_file()} - {"SHA256SUMS.txt"}
-    require(actual == ORIGINAL_FILES, f"downloaded file set differs: {actual ^ ORIGINAL_FILES}")
+    require(actual == original_files, f"downloaded file set differs: {actual ^ original_files}")
     for name, expected in sums.items():
         require(sha256(source / name) == expected, f"original SHA256 mismatch: {name}")
     return sums
@@ -118,14 +118,15 @@ def hex_number(value: int) -> str:
     return f"0x{value:x}"
 
 
-def function_target(name: str) -> str | None:
-    for target in FUNCTIONS:
+def function_target(name: str, function_names: tuple[str, ...] = FUNCTIONS) -> str | None:
+    for target in function_names:
         if name == target or re.fullmatch(re.escape(target) + r"\$[0-9a-f]{32}", name):
             return target
     return None
 
 
-def elf_proof(path: Path, image: bytes, diagnostic_path: Path | None = None) -> tuple[list[dict], dict]:
+def elf_proof(path: Path, image: bytes, diagnostic_path: Path | None = None,
+              function_names: tuple[str, ...] = FUNCTIONS) -> tuple[list[dict], dict]:
     elf = path.read_bytes()
     require(elf[:6] == b"\x7fELF\x02\x01" and struct.unpack_from("<H", elf, 18)[0] == 183,
             "vmlinux is not little-endian AArch64 ELF64")
@@ -163,6 +164,7 @@ def elf_proof(path: Path, image: bytes, diagnostic_path: Path | None = None) -> 
     require(loads, "ELF LOAD segments missing")
     found = {}
     text_base = None
+    copy_to_user_address = None
     symbol_tables = []
     candidates = []
     for table in sections:
@@ -182,6 +184,8 @@ def elf_proof(path: Path, image: bytes, diagnostic_path: Path | None = None) -> 
             stats["named_count"] += bool(name)
             if name == "_text":
                 text_base = address
+            if name == "_copy_to_user" and kind == 2:
+                copy_to_user_address = address
             lower = name.lower()
             if ("get_info" in lower or "report_event" in lower or
                     ("ksu" in lower and "ioctl" in lower) or
@@ -191,7 +195,7 @@ def elf_proof(path: Path, image: bytes, diagnostic_path: Path | None = None) -> 
                 candidates.append({"name": name, "type": kind, "binding": info >> 4,
                                    "size": size, "shndx": section_index,
                                    "section_name": section_name, "address": hex_number(address)})
-            target = function_target(name)
+            target = function_target(name, function_names)
             if not target or kind != 2 or size <= 32 or section_index >= shcount:
                 continue
             section = sections[section_index]
@@ -205,7 +209,7 @@ def elf_proof(path: Path, image: bytes, diagnostic_path: Path | None = None) -> 
                      "sha256": hashlib.sha256(code).hexdigest(), "hex": code.hex()}
             if target not in found or (name == target and found[target]["symbol"] != target):
                 found[target] = proof
-    missing = set(FUNCTIONS) - set(found)
+    missing = set(function_names) - set(found)
     if missing and diagnostic_path is not None:
         diagnostic = {"missing_required_symbols": sorted(missing),
                       "required_rule": "STT_FUNC, exact name or exact $ plus 32 lowercase hex suffix; size > 32; bytes in Image",
@@ -221,8 +225,9 @@ def elf_proof(path: Path, image: bytes, diagnostic_path: Path | None = None) -> 
     require(text_base is not None, "_text ELF symbol missing")
     metadata = {"text_base": hex_number(text_base), "sections": named_sections,
                 "load_segments": loads,
+                "copy_to_user_address": hex_number(copy_to_user_address) if copy_to_user_address is not None else None,
                 "note": "rodata addresses and ELF file offsets retained for PC-relative constant-pool analysis"}
-    return [found[name] for name in FUNCTIONS], metadata
+    return [found[name] for name in function_names], metadata
 
 
 def disassemble(vmlinux: Path, functions: list[dict], output: Path) -> None:

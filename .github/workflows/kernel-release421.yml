@@ -1,0 +1,98 @@
+name: Build SukiSU release 4.2.1 (40994 UAPI5 + SUSFS)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Maximize build space
+        uses: AdityaGarg8/remove-unwanted-software@v5
+        with:
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'true'
+          remove-large-packages: 'true'
+          remove-swapfile: 'true'
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+      - name: Install build and inspection dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential linux-libc-dev bc bison flex libssl-dev libelf-dev \
+            ccache git curl wget zip unzip xz-utils openssl pixz binutils-aarch64-linux-gnu
+      - name: Verify pinned build integration
+        run: python3 -m unittest discover -s tests -v
+      - name: Configure ccache
+        run: |
+          mkdir -p ~/.ccache
+          ccache --max-size=2G
+          ccache --set-config=compression=true
+          echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
+      - uses: actions/cache@v5
+        with:
+          path: ~/.ccache
+          key: release421-ccache-${{ github.sha }}
+          restore-keys: official-40971-5-ccache-
+      - name: Build pinned release 4.2.1 GKI
+        run: |
+          set -euo pipefail
+          workspace="/tmp/gki-release421-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          python3 .github/workflows/scripts/build.py --release-4-2-1 \
+            --android android12 --kernel 5.10 --sub-level 209 --os-patch 2024-05 --revision r13 \
+            --ksu-commit ee35e65428054476c279eae59f7f2bba272040b9 \
+            --susfs-commit 9892175b4acec7ee844e113b8d02c0f4d12cdfac \
+            --no-kpm --no-release --workspace "$workspace" --output-json "$workspace/build-result.json"
+      - name: Collect original kernel and exact build evidence
+        run: |
+          set -euo pipefail
+          workspace="/tmp/gki-release421-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          build_dir="$workspace/android12-5.10-209"
+          mkdir -p original
+          cp "$build_dir/android12-5.10.209-2024-05-AnyKernel3.zip" original/
+          cp "$build_dir/release-4.2.1-manifest.json" original/
+          cp "$build_dir/release-4.2.1-resolved-manifest.xml" original/
+          cp "$workspace/build-result.json" original/
+          cp "$build_dir/common/arch/arm64/configs/gki_defconfig" original/gki_defconfig
+          cp "$build_dir/out/android12-5.10/common/.config" original/kernel.config
+          cp "$build_dir/out/android12-5.10/dist/vmlinux" original/
+          cp "$build_dir/out/android12-5.10/dist/System.map" original/
+          (cd original && sha256sum ./* > SHA256SUMS.txt)
+      - name: Verify packaged Image and export compact evidence
+        id: inspect
+        run: |
+          python3 .github/workflows/scripts/inspect_release421_artifacts.py \
+            --input original --kernel-only kernel-release421 --evidence evidence-release421 \
+            --build-run-id "$GITHUB_RUN_ID"
+      - name: Upload verified AnyKernel3 ZIP
+        uses: actions/upload-artifact@v7
+        with:
+          name: kernel-release421
+          path: kernel-release421/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload failed inspection input for diagnosis
+        if: ${{ failure() && steps.inspect.outcome == 'failure' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: unverified-release421-inspection-input
+          path: original/android12-5.10.209-2024-05-AnyKernel3.zip
+          if-no-files-found: warn
+          retention-days: 3
+      - name: Upload compact build and binary evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: evidence-release421
+          path: evidence-release421/
+          if-no-files-found: warn
+          retention-days: 14

@@ -103,6 +103,33 @@ OFFICIAL_40971_5_COMMON_COMMIT = "f0826289c51653ee116c20c1dda9c87ad8a30636"
 OFFICIAL_40971_5_TUPLE = ("android12", "5.10", "209", "2024-05")
 
 
+# The release APK still requires UAPI 5; newer builtin HEAD has incompatible UAPI 6.
+RELEASE_4_2_1_KSU_COMMIT = "ee35e65428054476c279eae59f7f2bba272040b9"
+
+
+@dataclass(frozen=True)
+class PinnedTarget:
+    name: str
+    kernelsu_commit: str
+    susfs_commit: str
+    patch_commit: str
+    common_commit: str
+    kernel_tuple: tuple
+    version: int
+    uapi: int = 5
+    susfs_version: str = "2.3.0"
+
+
+OFFICIAL_40971_5_TARGET = PinnedTarget(
+    "40971-5", OFFICIAL_40971_5_KSU_COMMIT, OFFICIAL_40971_5_SUSFS_COMMIT,
+    OFFICIAL_40971_5_SUKISU_PATCH_COMMIT, OFFICIAL_40971_5_COMMON_COMMIT,
+    OFFICIAL_40971_5_TUPLE, 40971)
+RELEASE_4_2_1_TARGET = PinnedTarget(
+    "release-4.2.1", RELEASE_4_2_1_KSU_COMMIT, OFFICIAL_40971_5_SUSFS_COMMIT,
+    OFFICIAL_40971_5_SUKISU_PATCH_COMMIT, OFFICIAL_40971_5_COMMON_COMMIT,
+    OFFICIAL_40971_5_TUPLE, 40994)
+
+
 @dataclass
 class BuildConfig:
     android_version: str
@@ -122,6 +149,7 @@ class BuildConfig:
     revision: Optional[str] = None
     build_id: Optional[str] = None
     official_40971_5: bool = False
+    release_4_2_1: bool = False
 
     def __post_init__(self):
         self._validate_android_version()
@@ -129,22 +157,35 @@ class BuildConfig:
         self._validate_kernel_android_compat()
         self._validate_sub_level()
         self._set_build_id()
-        self._validate_official_40971_5()
+        self._validate_pinned_target()
 
-    def _validate_official_40971_5(self):
-        if not self.official_40971_5:
+    @property
+    def pinned_target(self) -> Optional[PinnedTarget]:
+        if self.release_4_2_1:
+            return RELEASE_4_2_1_TARGET
+        return OFFICIAL_40971_5_TARGET if self.official_40971_5 else None
+
+    @property
+    def pinned_build(self) -> bool:
+        return self.pinned_target is not None
+
+    def _validate_pinned_target(self):
+        if self.official_40971_5 and self.release_4_2_1:
+            raise ValueError("Pinned build profiles are mutually exclusive")
+        target = self.pinned_target
+        if target is None:
             return
         actual = (self.android_version, self.kernel_version, self.sub_level, self.os_patch_level)
-        if actual != OFFICIAL_40971_5_TUPLE:
-            raise ValueError(f"40971-5 profile requires {OFFICIAL_40971_5_TUPLE}, got {actual}")
-        if self.kernelsu_commit != OFFICIAL_40971_5_KSU_COMMIT:
-            raise ValueError("40971-5 profile requires the pinned KernelSU commit")
-        if self.susfs_commit != OFFICIAL_40971_5_SUSFS_COMMIT:
-            raise ValueError("40971-5 profile requires the pinned SUSFS commit")
+        if actual != target.kernel_tuple:
+            raise ValueError(f"{target.name} profile requires {target.kernel_tuple}, got {actual}")
+        if self.kernelsu_commit != target.kernelsu_commit:
+            raise ValueError(f"{target.name} profile requires the pinned KernelSU commit")
+        if self.susfs_commit != target.susfs_commit:
+            raise ValueError(f"{target.name} profile requires the pinned SUSFS commit")
         if self.revision != "r13":
-            raise ValueError("40971-5 profile requires the certified r13 revision")
+            raise ValueError(f"{target.name} profile requires the certified r13 revision")
         if self.use_kpm or self.make_release:
-            raise ValueError("40971-5 profile requires KPM and release generation to be disabled")
+            raise ValueError(f"{target.name} profile requires KPM and release generation to be disabled")
 
     def _validate_android_version(self):
         valid = [v.value for v in AndroidVersion]
@@ -211,6 +252,8 @@ class BuildConfig:
         }
         if self.official_40971_5:
             data.update(official_40971_5=True, susfs_commit=self.susfs_commit)
+        if self.release_4_2_1:
+            data.update(release_4_2_1=True, susfs_commit=self.susfs_commit)
         return data
 
 

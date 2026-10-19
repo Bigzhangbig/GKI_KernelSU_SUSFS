@@ -77,7 +77,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--verbose", "-v", action="store_true")
     parser.add_argument("--output-json")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--official-40971-5", action="store_true", help="Build the pinned 40971-5 UAPI5 GKI target")
+    profile = parser.add_mutually_exclusive_group()
+    profile.add_argument("--release-4-2-1", action="store_true", help="Build the pinned SukiSU v4.2.1 / 40994 UAPI5 GKI target")
+    profile.add_argument("--official-40971-5", action="store_true", help="Build the pinned 40971-5 UAPI5 GKI target")
 
     return parser.parse_args()
 
@@ -100,6 +102,7 @@ def create_build_config(args: argparse.Namespace) -> BuildConfig:
         custom_version=args.custom_version,
         revision=args.revision,
         official_40971_5=args.official_40971_5,
+        release_4_2_1=args.release_4_2_1,
     )
 
 
@@ -245,8 +248,8 @@ def main():
         logger.error("请指定 --all, --matrix 或 --android")
         return 1
 
-    if args.official_40971_5 and (args.all or args.matrix):
-        logger.error("40971-5 profile supports only a single explicit build")
+    if (args.official_40971_5 or args.release_4_2_1) and (args.all or args.matrix):
+        logger.error("Pinned profiles support only a single explicit build")
         return 1
 
     workspace = args.workspace

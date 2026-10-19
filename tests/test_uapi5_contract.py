@@ -91,7 +91,7 @@ def table_entries(table: str) -> dict[str, str]:
     return entries
 
 
-def host_harness(header: str, dispatch: str) -> str:
+def host_harness(header: str, dispatch: str, kernel_version: int = 40971) -> str:
     declarations = header_declarations(header)
     functions = "\n\n".join(c_function(dispatch, name) for name in FUNCTION_NAMES)
     dispatcher = c_function(dispatch, "ksu_supercall_handle_ioctl")
@@ -116,7 +116,7 @@ typedef uint32_t __u32;
 #define DECLARE(type, name, val) enum {{ name = val }}
 #define __user
 #define __init
-#define KERNEL_SU_VERSION 40971
+#define KERNEL_SU_VERSION {kernel_version}
 #define KSU_FEATURE_MAX 37
 #define pr_info(...) ((void)0)
 #define pr_warn(...) ((void)0)
@@ -174,12 +174,12 @@ int main(void) {{
         manager = is_manager_app;
         memset(&info, 0xa5, sizeof(info));
         CHECK(do_get_info(&info) == 0);
-        CHECK(info.version == 40971 && info.uapi_version == 5);
+        CHECK(info.version == {kernel_version} && info.uapi_version == 5);
         CHECK(info.features == KSU_FEATURE_MAX);
         CHECK(info.flags == (is_manager_app ? KSU_GET_INFO_FLAG_MANAGER : 0));
         CHECK((info.flags & KSU_GET_INFO_FLAG_BUNDLED) == 0);
         CHECK(do_get_info_legacy(&legacy) == 0);
-        CHECK(legacy.version == 40971 && legacy.features == KSU_FEATURE_MAX);
+        CHECK(legacy.version == {kernel_version} && legacy.features == KSU_FEATURE_MAX);
         CHECK(legacy.flags == (is_manager_app ? KSU_GET_INFO_FLAG_MANAGER : 0));
     }}
     fail_copy_to = true;
