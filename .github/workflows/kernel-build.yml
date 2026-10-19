@@ -1,112 +1,15 @@
-name: Kernel Build
-
-permissions:
-  contents: write
-  actions: write
+name: Build official 40971-5 (UAPI5 + SUSFS)
 
 on:
   workflow_dispatch:
-    inputs:
-      android_version:
-        description: 'Android 版本'
-        required: true
-        type: choice
-        options:
-          - android12
-          - android13
-          - android14
-          - android15
-        default: android13
-      kernel_version:
-        description: 'Kernel 版本'
-        required: true
-        type: choice
-        options:
-          - "5.10"
-          - "5.15"
-          - "6.1"
-          - "6.6"
-        default: "5.15"
-      sub_level:
-        description: 'Sub Level 版本'
-        required: true
-        type: string
-        default: '124'
-      os_patch_level:
-        description: 'OS Patch Level'
-        required: true
-        type: string
-        default: '2025-02'
-      revision:
-        description: 'Android 12 Revision (可选)'
-        required: false
-        type: string
-        default: ''
-      kernelsu_version:
-        description: 'SukiSU 版本'
-        required: true
-        type: choice
-        options:
-          - Stable(标准)
-          - Dev(开发)
-        default: Stable(标准)
-      kernelsu_commit:
-        description: '指定 KernelSU commit hash (可选)'
-        required: false
-        type: string
-        default: ''
-      susfs_commit:
-        description: '指定 SUSFS commit hash'
-        required: false
-        type: string
-        default: ''
-      custom_version:
-        description: '自定义版本名称 (可选)'
-        required: false
-        type: string
-        default: ''
-      use_zram:
-        description: '启用 ZRAM (LZ4KD)'
-        required: true
-        type: boolean
-        default: false
-      use_kpm:
-        description: '启用 KPM'
-        required: true
-        type: boolean
-        default: true
-      BBG:
-        description: '启用 Baseband-guard'
-        required: true
-        type: boolean
-        default: false
-      supp_op:
-        description: '启用 OnePlus 8E 支持'
-        required: true
-        type: boolean
-        default: false
-      set_defbbr:
-        description: '设置 BBR 为默认拥塞算法'
-        required: true
-        type: boolean
-        default: false
-      make_release:
-        description: '创建 GitHub Release'
-        required: true
-        type: boolean
-        default: true
-      send_telegram:
-        description: '发送 Telegram 通知'
-        required: true
-        type: boolean
-        default: true
 
-env:
-  PYTHON_VERSION: '3.10'
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
     steps:
       - name: Maximize build space
         uses: AdityaGarg8/remove-unwanted-software@v5
@@ -118,93 +21,73 @@ jobs:
           remove-docker-images: 'true'
           remove-large-packages: 'true'
           remove-swapfile: 'true'
-          verbose: 'true'
 
-      - name: Checkout code
+      - name: Checkout build scripts and pinned patch
         uses: actions/checkout@v6
 
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: '3.10'
 
-      - name: Install dependencies
+      - name: Install build dependencies
         run: |
-          sudo apt update && sudo apt upgrade -y
-          sudo apt install -y ccache python3 git curl wget zip unzip
-          pip install PyYAML
+          sudo apt update
+          sudo apt install -y build-essential linux-libc-dev bc bison flex libssl-dev libelf-dev \
+            ccache git curl wget zip unzip xz-utils openssl pixz
+
+      - name: Verify target integration
+        run: python3 -m unittest discover -s tests -v
 
       - name: Configure ccache
         run: |
-          mkdir -p ~/.cache/bazel
-          ccache --version
+          mkdir -p ~/.ccache
           ccache --max-size=2G
           ccache --set-config=compression=true
-          echo "CCACHE_DIR=$HOME/.ccache" >> $GITHUB_ENV
+          echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
 
       - name: Restore ccache
         uses: actions/cache@v5
         with:
           path: ~/.ccache
-          key: ${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.sub_level }}-ccache-${{ github.sha }}
-          restore-keys: |
-            ${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.sub_level }}-ccache-
+          key: official-40971-5-ccache-${{ github.sha }}
+          restore-keys: official-40971-5-ccache-
 
-      - name: Build kernel
+      - name: Build pinned official GKI
         run: |
-          cd ./.github/workflows/scripts
+          workspace="/tmp/gki-build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          python3 .github/workflows/scripts/build.py \
+            --official-40971-5 \
+            --android android12 --kernel 5.10 --sub-level 209 \
+            --os-patch 2024-05 --revision r13 \
+            --ksu-commit 6c284e957feaa9a388a9f1c37dc4ec80d95e434b \
+            --susfs-commit 9892175b4acec7ee844e113b8d02c0f4d12cdfac \
+            --no-kpm --no-release \
+            --workspace "$workspace" --output-json "$workspace/build-result.json"
 
-          ARGS="--android ${{ github.event.inputs.android_version }}"
-          ARGS="$ARGS --kernel ${{ github.event.inputs.kernel_version }}"
-          ARGS="$ARGS --sub-level ${{ github.event.inputs.sub_level }}"
-          ARGS="$ARGS --os-patch ${{ github.event.inputs.os_patch_level }}"
-          [ -n "${{ github.event.inputs.revision }}" ] && ARGS="$ARGS --revision ${{ github.event.inputs.revision }}"
-          ARGS="$ARGS --ksu-version ${{ github.event.inputs.kernelsu_version }}"
-
-          [ "${{ github.event.inputs.use_zram }}" = "true" ] && ARGS="$ARGS --zram"
-          [ "${{ github.event.inputs.use_kpm }}" = "false" ] && ARGS="$ARGS --no-kpm"
-          [ "${{ github.event.inputs.BBG }}" = "true" ] && ARGS="$ARGS --bbg"
-          [ "${{ github.event.inputs.supp_op }}" = "true" ] && ARGS="$ARGS --op8e"
-          [ "${{ github.event.inputs.set_defbbr }}" = "true" ] && ARGS="$ARGS --bbr"
-          [ -z "${{ github.event.inputs.kernelsu_commit }}" ] || ARGS="$ARGS --ksu-commit=${{ github.event.inputs.kernelsu_commit }}"
-          [ -z "${{ github.event.inputs.susfs_commit }}" ] || ARGS="$ARGS --susfs-commit=${{ github.event.inputs.susfs_commit }}"
-          [ -z "${{ github.event.inputs.custom_version }}" ] || ARGS="$ARGS --custom-version=${{ github.event.inputs.custom_version }}"
-          [ "${{ github.event.inputs.make_release }}" = "true" ] || ARGS="$ARGS --no-release"
-
-          python3 build.py $ARGS
-
-      - name: Prepare artifacts
+      - name: Prepare review artifacts
         run: |
+          set -euo pipefail
+          workspace="/tmp/gki-build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          build_dir="$workspace/android12-5.10-209"
           mkdir -p artifacts
-          find /tmp/gki-build -name "*.zip" -type f -exec cp {} artifacts/ \;
-          find /tmp/gki-build -name "*.img" -type f -exec cp {} artifacts/ \;
+          cp "$build_dir/android12-5.10.209-2024-05-AnyKernel3.zip" artifacts/
+          cp "$build_dir/40971-5-manifest.json" artifacts/
+          cp "$workspace/build-result.json" artifacts/
+          cp "$build_dir/common/arch/arm64/configs/gki_defconfig" artifacts/gki_defconfig
+          cp "$build_dir/out/android12-5.10/common/.config" artifacts/kernel.config
+          cp "$build_dir/out/android12-5.10/dist/vmlinux" artifacts/
+          cp "$build_dir/out/android12-5.10/dist/System.map" artifacts/
+          cp "$build_dir/40971-5-resolved-manifest.xml" artifacts/
+          test -s artifacts/android12-5.10.209-2024-05-AnyKernel3.zip
+          test -s artifacts/vmlinux
+          test -s artifacts/System.map
+          (cd artifacts && sha256sum ./* > SHA256SUMS.txt)
 
-      - name: Upload artifacts
+      - name: Upload AnyKernel3 and build evidence
         uses: actions/upload-artifact@v7
         with:
-          name: kernel-${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.sub_level }}
-          path: artifacts/*
-
-      - name: Generate checksums
-        run: |
-          echo "=== Creating checksums ==="
-          sha256sum artifacts/* > SHA256SUMS.txt
-          cat SHA256SUMS.txt
-
-      - name: Send Telegram Notification
-        if: ${{ github.event.inputs.send_telegram == 'true' && success() }}
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TELEGRAM_MESSAGE_THREAD_ID: ${{ secrets.TELEGRAM_MESSAGE_THREAD_ID }}
-        run: |
-          cd ./.github/workflows/scripts
-          python3 telegram_notify.py single \
-            "${{ github.event.inputs.android_version }}" \
-            "${{ github.event.inputs.kernel_version }}" \
-            "${{ github.event.inputs.sub_level }}" \
-            "${{ github.event.inputs.os_patch_level }}" \
-            "${{ github.event.inputs.kernelsu_version }}" \
-            "${{ github.event.inputs.use_zram }}" \
-            "${{ github.event.inputs.use_kpm }}" \
-            "../../SHA256SUMS.txt"
+          name: official-40971-5-uapi5-susfs
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 7
