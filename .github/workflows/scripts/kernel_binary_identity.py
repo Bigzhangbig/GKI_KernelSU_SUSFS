@@ -2,7 +2,8 @@
 
 This is deliberately a small decoder, not a general disassembler or kernel
 emulator. It follows constants and stack writes up to the 16-byte copy ABI,
-exploring both sides of conditional branches. Unrecognized instructions fail.
+joining both sides of conditional branches to a fixed point. Unrecognized
+instructions fail; BRK is a terminal trap and cannot count as a proven copy.
 """
 from dataclasses import dataclass
 import hashlib
@@ -62,7 +63,31 @@ class _State:
             return
         if width == 32:
             value = value & 0xffffffff if isinstance(value, int) else None
-        self.regs[reg], self.origins[reg] = value, origin
+        self.regs[reg] = value
+        self.origins[reg] = tuple(sorted(set(origin))) if value is not None else ()
+
+    def join(self, other):
+        """Least precise state covering both inputs; differing constants become unknown."""
+        result = self.clone()
+        for values, origins in (("regs", "origins"), ("vectors", "vector_origins")):
+            left_values, right_values = getattr(self, values), getattr(other, values)
+            left_origins, right_origins = getattr(self, origins), getattr(other, origins)
+            merged_values, merged_origins = [], []
+            for left, right, left_src, right_src in zip(left_values, right_values, left_origins, right_origins):
+                value = left if left == right else None
+                merged_values.append(value)
+                merged_origins.append(tuple(sorted(set(left_src + right_src))) if value is not None else ())
+            setattr(result, values, merged_values)
+            setattr(result, origins, merged_origins)
+        for location in self.stack.keys() | other.stack.keys():
+            left, left_src = self.stack.get(location, (None, ()))
+            right, right_src = other.stack.get(location, (None, ()))
+            result.stack[location] = (left if left == right else None,
+                                      tuple(sorted(set(left_src + right_src))))
+        return result
+
+    def same(self, other):
+        return self.__dict__ == other.__dict__
 
 
 def verify_get_info_identity(image: bytes, function: dict, metadata: dict,
@@ -88,8 +113,17 @@ def verify_get_info_identity(image: bytes, function: dict, metadata: dict,
              "GET_INFO function bytes do not match packaged Image")
     digest = hashlib.sha256(code).hexdigest()
     _require(digest == function["sha256"], "GET_INFO function bytes hash mismatch")
-    _require("copy_to_user_address" in metadata, "GET_INFO copy_to_user address metadata is required")
-    copy_address = _number(metadata["copy_to_user_address"])
+    # Plural ELF symbol candidates are authoritative when present. A stale
+    # single-value compatibility field must not broaden that allow-set.
+    if "copy_to_user_addresses" in metadata:
+        candidates = metadata["copy_to_user_addresses"]
+        _require(isinstance(candidates, (list, tuple, set)) and bool(candidates),
+                 "GET_INFO copy_to_user address metadata is required and must be a nonempty collection")
+        copy_addresses = {_number(candidate) for candidate in candidates}
+    else:
+        _require("copy_to_user_address" in metadata, "GET_INFO copy_to_user address metadata is required")
+        copy_addresses = {_number(metadata["copy_to_user_address"])}
+    _require(all(0 <= candidate <= _MASK64 for candidate in copy_addresses), "invalid GET_INFO copy address")
     section = metadata["sections"][".rodata"]
     ro_start, ro_end = _number(section["address"]), _number(section["address"]) + _number(section["size"])
     _require(base <= ro_start < ro_end <= base + len(image), "rodata lies outside packaged Image")
@@ -139,7 +173,7 @@ def verify_get_info_identity(image: bytes, function: dict, metadata: dict,
         _require(actual_features == expected_features,
                  f"GET_INFO features mismatch: {actual_features} != {expected_features}")
         _require(all(origins for _, origins in parts[:4]), "GET_INFO version initialization lacks provenance")
-        _require(target == copy_address, "GET_INFO copy call target mismatch")
+        _require(target in copy_addresses, "GET_INFO copy call target mismatch")
         flags = parts[4:8]
         records.append({
             "copy_call_image_offset": hex(offset + pc), "copy_call_target": hex(target),
@@ -151,6 +185,8 @@ def verify_get_info_identity(image: bytes, function: dict, metadata: dict,
 
     pending = [(0, _State(), 0)]
     explored = 0
+    states = {}
+    traps = set()
     while pending:
         pc, state, steps = pending.pop()
         while True:
@@ -158,6 +194,12 @@ def verify_get_info_identity(image: bytes, function: dict, metadata: dict,
             steps += 1
             _require(explored <= 4096 and steps <= 512, "unsupported GET_INFO loop/path complexity")
             _require(pc % 4 == 0 and 0 <= pc < size, "unsupported GET_INFO branch outside handler before copy")
+            prior = states.get(pc)
+            if prior is not None:
+                state = prior.join(state)
+                if state.same(prior):
+                    break  # This edge is already covered by the fixed-point input.
+            states[pc] = state.clone()
             word = struct.unpack_from("<I", code, pc)[0]
             rd, rn, rm = word & 31, (word >> 5) & 31, (word >> 16) & 31
             origin = (("instruction", offset + pc, 4),)
@@ -224,6 +266,11 @@ def verify_get_info_identity(image: bytes, function: dict, metadata: dict,
                     state.vectors[rd], state.vector_origins[rd] = raw, sources + origin
                 else:
                     store(state, location, state.vectors[rd], width, state.vector_origins[rd], pc)
+            elif word & 0x3ffffc00 == 0x08dffc00:  # LDAR[B/H/W/X], acquire-only scalar load
+                width = 1 << (word >> 30)
+                raw, sources = load(state, state.read(rn, sp=True), width, pc)
+                state.write(rd, int.from_bytes(raw, "little") if raw is not None else None,
+                            sources + origin, 64 if width == 8 else 32)
             elif word & 0x3b000000 == 0x39000000 and not word & (1 << 26):  # scalar LDR/STR unsigned
                 width, opcode = 1 << (word >> 30), (word >> 22) & 3
                 _require(opcode in (0, 1), "unsupported signed scalar load")
@@ -282,6 +329,9 @@ def verify_get_info_identity(image: bytes, function: dict, metadata: dict,
                 bits, shift = (19, 5) if word & 0x7e000000 == 0x34000000 else (14, 5)
                 target_pc = pc + _signed((word >> shift) & ((1 << bits) - 1), bits) * 4
                 pending.append((target_pc, state.clone(), steps))
+            elif word & 0xffe0001f == 0xd4200000:  # BRK is a terminal trap, never a successful copy
+                traps.add(offset + pc)
+                break
             elif (word & 0x1f800000 in (0x13000000, 0x12000000) or
                   word & 0x1f000000 in (0x0b000000, 0x0a000000, 0x1b000000) or
                   word & 0x1fe00000 == 0x1a800000):
@@ -299,5 +349,7 @@ def verify_get_info_identity(image: bytes, function: dict, metadata: dict,
             "function_symbol": function["symbol"], "function_address": hex(address),
             "function_image_offset": hex(offset), "function_size": size, "function_sha256": digest,
             "rodata_reads": list(reads.values()), "records": records,
+            "copy_to_user_addresses": [hex(candidate) for candidate in sorted(copy_addresses)],
+            "trap_terminal_image_offsets": [hex(where) for where in sorted(traps)],
             "full_version": {"value": expected_full_version, "image_offset": hex(full_offset), "bytes_hex": full.hex()},
-            "method": "bounded AArch64 constant/stack data-flow to 16-byte copy ABI; all conditional paths checked"}
+            "method": "AArch64 constant/stack fixed-point data-flow to 16-byte copy ABI; all reachable copy records checked"}

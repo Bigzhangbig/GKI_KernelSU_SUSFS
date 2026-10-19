@@ -1,0 +1,57 @@
+name: Reinspect existing SukiSU release421 build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+      - name: Check repaired inspection tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Verify original build provenance
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 .github/workflows/scripts/reinspect_release421.py --capture-source preflight-provenance
+      - name: Download original ELF evidence
+        uses: actions/download-artifact@v7
+        with:
+          name: evidence-release421
+          run-id: 39184992228
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: source-evidence
+      - name: Download original unverified ZIP
+        uses: actions/download-artifact@v7
+        with:
+          name: unverified-release421-inspection-input
+          run-id: 39184992228
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: source-raw
+      - name: Revalidate unchanged compiled kernel
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 .github/workflows/scripts/reinspect_release421.py \
+            --source source-evidence --raw source-raw --provenance source-provenance \
+            --evidence evidence-release421 --kernel kernel-release421 --inspection-run-id "$GITHUB_RUN_ID"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: kernel-release421
+          path: kernel-release421/
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@v7
+        with:
+          name: evidence-release421
+          path: evidence-release421/
+          if-no-files-found: error
+          retention-days: 14

@@ -164,7 +164,7 @@ def elf_proof(path: Path, image: bytes, diagnostic_path: Path | None = None,
     require(loads, "ELF LOAD segments missing")
     found = {}
     text_base = None
-    copy_to_user_address = None
+    copy_to_user_addresses = set()
     symbol_tables = []
     candidates = []
     for table in sections:
@@ -184,8 +184,9 @@ def elf_proof(path: Path, image: bytes, diagnostic_path: Path | None = None,
             stats["named_count"] += bool(name)
             if name == "_text":
                 text_base = address
-            if name == "_copy_to_user" and kind == 2:
-                copy_to_user_address = address
+            if kind == 2 and (name == "_copy_to_user" or
+                              re.fullmatch(r"_copy_to_user\$[0-9a-f]{32}", name)):
+                copy_to_user_addresses.add(address)
             lower = name.lower()
             if ("get_info" in lower or "report_event" in lower or
                     ("ksu" in lower and "ioctl" in lower) or
@@ -225,7 +226,8 @@ def elf_proof(path: Path, image: bytes, diagnostic_path: Path | None = None,
     require(text_base is not None, "_text ELF symbol missing")
     metadata = {"text_base": hex_number(text_base), "sections": named_sections,
                 "load_segments": loads,
-                "copy_to_user_address": hex_number(copy_to_user_address) if copy_to_user_address is not None else None,
+                "copy_to_user_address": hex_number(min(copy_to_user_addresses)) if copy_to_user_addresses else None,
+                "copy_to_user_addresses": [hex_number(a) for a in sorted(copy_to_user_addresses)],
                 "note": "rodata addresses and ELF file offsets retained for PC-relative constant-pool analysis"}
     return [found[name] for name in function_names], metadata
 
