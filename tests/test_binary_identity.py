@@ -19,8 +19,8 @@ from release_target import load_release_target
 TARGET = load_release_target()
 
 def verify_get_info_identity(image, function, metadata, **overrides):
-    expected = dict(expected_version=TARGET.version, expected_uapi=TARGET.uapi,
-                    expected_features=TARGET.features, expected_full_version=TARGET.full_version)
+    expected = dict(expected_version=40994, expected_uapi=5,
+                    expected_features=7, expected_full_version="v4.2.1-ee35e654@builtin")
     expected.update(overrides)
     return check_identity(image, function, metadata, **expected)
 
@@ -156,9 +156,11 @@ class BinaryIdentityTests(unittest.TestCase):
         functions = proof.get("linked_functions_match_packaged_image", proof.get("linked_functions"))
         with zipfile.ZipFile(archive) as z:
             image = z.read("Image")
-        result = verify_get_info_identity(image, functions[0], metadata)
+        result = check_identity(image, functions[0], metadata, expected_version=TARGET.version,
+                                expected_uapi=TARGET.uapi, expected_features=TARGET.features,
+                                expected_full_version=TARGET.full_version)
         self.assertEqual(result["function_sha256"], functions[0]["sha256"])
-        self.assertEqual(result["version"], 40994)
+        self.assertEqual(result["version"], TARGET.version)
 
     def test_referenced_record_and_store_prove_identity(self):
         image, function, metadata = fixture()
@@ -168,6 +170,15 @@ class BinaryIdentityTests(unittest.TestCase):
         self.assertEqual(proof["rodata_reads"][0]["image_offset"], "0x34c0")
         self.assertEqual(proof["full_version"]["image_offset"], "0x4000")
         self.assertTrue(proof["records"])
+
+    def test_native_uapi6_record_and_legacy_mismatch(self):
+        image, function, metadata = fixture(version=41049, features=17, uapi=6)
+        expected = dict(expected_version=41049, expected_features=17, expected_uapi=6)
+        proof = verify_get_info_identity(bytes(image), function, metadata, **expected)
+        self.assertEqual((proof['version'], proof['features'], proof['uapi_version']), (41049, 17, 6))
+        image, function, metadata = fixture(version=41049, features=17, uapi=5)
+        with self.assertRaisesRegex(ValueError, 'uapi_version mismatch'):
+            verify_get_info_identity(bytes(image), function, metadata, **expected)
 
     def test_complete_q_record_and_split_d_record_are_decoded(self):
         for split in (False, True):

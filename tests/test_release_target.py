@@ -104,6 +104,17 @@ class LatestReleasePolicyTests(unittest.TestCase):
         self.assertEqual(target.full_version, "v4.2.1-aaaaaaaa@builtin")
         self.assertEqual(target.pins, self.baseline.pins)
 
+    def test_official_stable_revision_release_is_accepted(self):
+        release = deepcopy(self.release)
+        release['tag_name'] = 'v4.2.1-r1'
+        asset = release['assets'][0]
+        asset['name'] = 'SukiSU_v4.2.1-r1_41049-release.apk'
+        asset['browser_download_url'] = ('https://github.com/SukiSU-Ultra/SukiSU-Ultra/'
+            'releases/download/v4.2.1-r1/' + asset['name'])
+        tag, version, found = policy.release_asset(release)
+        self.assertEqual((tag, version), ('v4.2.1-r1', 41049))
+        self.assertEqual(found, asset)
+
     def test_latest_entrypoint_actually_queries_latest(self):
         with self.environment() as calls:
             target = policy.resolve_latest_release()

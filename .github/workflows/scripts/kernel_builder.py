@@ -14,7 +14,8 @@ from dataclasses import asdict, dataclass, field
 from config import BuildConfig, SUSFS_REPO_CONFIG, SUKISU_PATCH_REPO_CONFIG, ANYKERNEL_CONFIG
 from release_target import resolve_latest_release
 
-RELEASE_PATCH = Path(__file__).resolve().parent.parent / "patches/sukisu-builtin-uapi5.patch"
+RELEASE_PATCH = Path(__file__).resolve().parent.parent / "patches/sukisu-builtin-release.patch"
+COMMON_PATCH = Path(__file__).resolve().parent.parent / "patches/sukisu-common-uapi6.patch"
 RELEASE_CONTRACT = Path(__file__).resolve().parents[3] / "tests/release_contract.py"
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -275,9 +276,9 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
         ksu_dir = self.work_dir / "KernelSU"
         header = ksu_dir / "kernel/include/uapi/supercall.h"
         if not self._pinned_patch.is_file():
-            raise RuntimeError(f"Required UAPI5 patch is missing: {self._pinned_patch}")
-        if not header.is_file() or not re.search(r'DECLARE\(__u32, KERNEL_SU_UAPI_VERSION, 2\)', header.read_text()):
-            raise RuntimeError("Pinned KernelSU source is not the expected UAPI2 baseline")
+            raise RuntimeError(f"Required builtin patch is missing: {self._pinned_patch}")
+        if not header.is_file() or not re.search(rf'DECLARE\(__u32, KERNEL_SU_UAPI_VERSION, {self.config.target.uapi}\)', header.read_text()):
+            raise RuntimeError("Pinned KernelSU source is not the expected native UAPI baseline")
         self._chdir(ksu_dir)
         patch = shlex.quote(str(self._pinned_patch))
         self._run_cmd(f"git apply --check {patch}")
@@ -305,7 +306,7 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
 
     def test_pinned_contract(self):
         if not self._pinned_contract.is_file():
-            raise RuntimeError(f"Required UAPI5 contract test is missing: {self._pinned_contract}")
+            raise RuntimeError(f"Required builtin contract test is missing: {self._pinned_contract}")
         self._run_cmd(f"{shlex.quote(sys.executable)} {shlex.quote(str(self._pinned_contract))} "
                       f"--source {shlex.quote(str(self.work_dir / 'KernelSU'))} --host-header")
 
@@ -343,6 +344,15 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
             raise RuntimeError(f"Required SukiSU hooks patch is missing: {hooks_patch}")
         if hooks_patch.exists():
             self._run_cmd(f"cp {hooks_patch} . && patch -p1 -F 3 < 69_hide_stuff.patch", check=True)
+        self.apply_common_compatibility_patch()
+
+    def apply_common_compatibility_patch(self):
+        if not COMMON_PATCH.is_file():
+            raise RuntimeError(f"Required common compatibility patch is missing: {COMMON_PATCH}")
+        self._chdir(self.work_dir / "common")
+        patch = shlex.quote(str(COMMON_PATCH))
+        self._run_cmd(f"git apply --check {patch}")
+        self._run_cmd(f"git apply {patch}")
 
 
     def apply_task_mmu_fixes(self):
@@ -483,7 +493,8 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
             "official_manager_certificate_sha256": self.config.target.manager_certificate_sha256,
             "manifest_commit": git_head(self.work_dir / ".repo/manifests"),
             "resolved_toolchain_manifest_sha256": hashlib.sha256(resolved_manifest.read_bytes()).hexdigest(),
-            "uapi_patch_sha256": hashlib.sha256(self._pinned_patch.read_bytes()).hexdigest(),
+            "source_patch_sha256": hashlib.sha256(self._pinned_patch.read_bytes()).hexdigest(),
+            "common_compatibility_patch_sha256": hashlib.sha256(COMMON_PATCH.read_bytes()).hexdigest(),
             "source_contract_sha256": hashlib.sha256(self._pinned_contract.read_bytes()).hexdigest(),
             "setup_script_sha256": hashlib.sha256(setup_file.read_bytes()).hexdigest(),
             "kernel_makefile_sha256": hashlib.sha256(makefile.read_bytes()).hexdigest(),

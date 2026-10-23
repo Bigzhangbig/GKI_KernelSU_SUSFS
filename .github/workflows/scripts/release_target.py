@@ -26,7 +26,7 @@ LABEL_FILES = frozenset(("kernel/Makefile", "kernel/Kbuild"))
 LABEL_ASSIGNMENT = re.compile(r"^(?:VERSION_BASE|VERSION_OFFSET|KSU_GITHUB_VER|GITHUB_COMMITS|LOCAL_COUNT|KSU_VERSION|VERSION_TAG|KSU_VERSION_FULL)\s*:?=")
 SHA = re.compile(r"[0-9a-f]{40}")
 DIGEST = re.compile(r"[0-9a-f]{64}")
-TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
+TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-r[1-9][0-9]*)?")
 FRONTEND_FIELDS = frozenset(("tag", "release_commit", "manager_version", "apk_name", "apk_sha256"))
 
 @dataclass(frozen=True)

@@ -137,9 +137,9 @@ class ArtifactChecksTests(unittest.TestCase):
             checks.check_original_sums(self.folder, {"artifact", "missing"})
 
     def test_thinlto_function_names_exclude_cfi_and_similar_symbols(self):
-        self.assertEqual(checks.function_target("do_manager$" + "a" * 32), "do_manager")
-        for name in ("do_manager.cfi_jt", "do_manager$abc", "do_manager$" + "A" * 32,
-                     "prefix_do_manager", "do_manager_extra"):
+        self.assertEqual(checks.function_target("do_extension$" + "a" * 32), "do_extension")
+        for name in ("do_extension.cfi_jt", "do_extension$abc", "do_extension$" + "A" * 32,
+                     "prefix_do_extension", "do_extension_extra"):
             with self.subTest(name=name):
                 self.assertIsNone(checks.function_target(name))
 

@@ -20,6 +20,10 @@ MANAGER_SYMBOL = "Java_com_sukisu_ultra_Natives_getManagerUAPIVersion"
 NONE = 0xffffffff
 
 
+class _MissingManagerSymbol(ValueError):
+    """A valid ARM64 library without the manager's exact dynamic symbol."""
+
+
 def _slice(data, offset, size, label):
     if offset < 0 or size < 0 or offset > len(data) or size > len(data) - offset:
         raise ValueError(f"Truncated or out-of-bounds {label}")
@@ -224,8 +228,10 @@ def parse_manager_uapi(data):
         symbol = _unpack("<IBBHQQ", table, offset, "ELF symbol")
         if cstring(strings, symbol[0]) == MANAGER_SYMBOL.encode("ascii"):
             matches.append(symbol)
+    if not matches:
+        raise _MissingManagerSymbol("Missing manager UAPI JNI symbol")
     if len(matches) != 1:
-        raise ValueError("Missing or ambiguous manager UAPI JNI symbol")
+        raise ValueError("Ambiguous manager UAPI JNI symbol")
     _, info, other, section_index, address, size = matches[0]
     if info & 15 != 2 or info >> 4 not in (1, 2) or other & 3 or not 0 < section_index < count:
         raise ValueError("Unsupported manager UAPI JNI symbol metadata")
@@ -306,7 +312,22 @@ def inspect_release_apk(path, apksigner=None):
             manifest = parse_binary_manifest(read("AndroidManifest.xml", 4 * 1024 * 1024))
             if manifest["package"] != "com.sukisu.ultra":
                 raise ValueError("Unexpected manager APK package: " + manifest["package"])
-            uapi = parse_manager_uapi(read("lib/arm64-v8a/libkernelsu.so", 16 * 1024 * 1024))
+            # Release builds randomize native filenames. Only an exact exported
+            # JNI symbol and its reviewed machine code identify the UAPI; neither
+            # a filename nor a symbol-like byte string is sufficient. A malformed
+            # library or a second candidate must fail closed, even if one parses.
+            candidates = []
+            for name in names:
+                if re.fullmatch(r"lib/arm64-v8a/[^/]+\.so", name):
+                    try:
+                        candidates.append((name, parse_manager_uapi(read(name, 16 * 1024 * 1024))))
+                    except _MissingManagerSymbol:
+                        continue
+            if not candidates:
+                raise ValueError("Missing manager UAPI JNI library")
+            if len(candidates) != 1:
+                raise ValueError("Ambiguous manager UAPI JNI libraries")
+            uapi = candidates[0][1]
         return dict(manifest, uapi=uapi, certificate_sha256=certificate,
                     sha256=hashlib.sha256(data).hexdigest())
     except (OSError, zipfile.BadZipFile, RuntimeError, NotImplementedError, EOFError, zlib.error) as exc:

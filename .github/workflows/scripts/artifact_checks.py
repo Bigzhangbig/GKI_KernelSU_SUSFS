@@ -12,7 +12,7 @@ from pathlib import Path
 
 MANIFEST_NAME = "release-manifest.json"
 RESOLVED_NAME = "release-resolved-manifest.xml"
-FUNCTIONS = ("do_get_info", "do_get_info_legacy", "do_report_event", "do_manager")
+FUNCTIONS = ("do_get_info", "do_get_info_legacy", "do_report_event", "do_extension", "do_lookup_symbols")
 
 
 def original_files(target):

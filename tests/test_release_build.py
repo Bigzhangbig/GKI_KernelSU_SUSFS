@@ -37,9 +37,9 @@ class ReleaseBuildTests(unittest.TestCase):
 
     def test_default_recipe_is_the_only_supported_target(self):
         target = self.builder.config.target
-        self.assertEqual(target.kernelsu_commit, "ee35e65428054476c279eae59f7f2bba272040b9")
-        self.assertEqual((target.version, target.uapi), (40994, 5))
-        self.assertEqual(self.builder.config.to_dict()["release_tag"], "v4.2.1")
+        self.assertEqual(target.kernelsu_commit, "ce75122bec7423e0f1fa06e3e9a174085c5231ab")
+        self.assertEqual((target.version, target.uapi), (41049, 6))
+        self.assertEqual(self.builder.config.to_dict()["release_tag"], "v4.2.1-r1")
         self.assertEqual((self.builder.config.android_version, self.builder.config.kernel_version,
                           self.builder.config.sub_level, self.builder.config.os_patch_level,
                           self.builder.config.revision), ("android12", "5.10", "209", "2024-05", "r13"))
@@ -68,9 +68,9 @@ class ReleaseBuildTests(unittest.TestCase):
             selected = build.create_build_config(argparse.Namespace())
         resolve.assert_called_once_with()
         self.assertEqual(selected.target, latest)
-        self.assertEqual(config_for_latest.target.version, 40994)
-        self.assertEqual(config_for_latest.target.backend_tag, "v4.2.1")
-        self.assertEqual(config_for_latest.target.full_version, "v4.2.1-ee35e654@builtin")
+        self.assertEqual(config_for_latest.target.version, 41049)
+        self.assertEqual(config_for_latest.target.backend_tag, "v4.2.1-r1")
+        self.assertEqual(config_for_latest.target.full_version, "v4.2.1-r1-ce75122b@builtin")
         self.assertEqual(config_for_latest.to_dict()["manager_version"], 40995)
         for field_name in ("kernelsu_commit", "common_commit", "susfs_commit", "patch_commit", "anykernel_commit"):
             with self.subTest(field=field_name), self.assertRaises(ValueError):
@@ -110,7 +110,7 @@ class ReleaseBuildTests(unittest.TestCase):
         with patch.object(build, "resolve_latest_release", return_value=self.builder.config.target):
             result = build.build_single(release_config(), self.temp.name, dry_run=True)
         self.assertTrue(result.success)
-        self.assertEqual(result.config.target.tag, "v4.2.1")
+        self.assertEqual(result.config.target.tag, "v4.2.1-r1")
 
     def test_direct_build_rejects_unadapted_release_before_clone(self):
         with patch.object(kernel_builder, "resolve_latest_release", side_effect=ValueError("unadapted Release")), \
@@ -121,7 +121,7 @@ class ReleaseBuildTests(unittest.TestCase):
         clone.assert_not_called()
 
     def test_missing_and_invalid_patch_are_fatal(self):
-        self.write("KernelSU/kernel/include/uapi/supercall.h", "DECLARE(__u32, KERNEL_SU_UAPI_VERSION, 2);\n")
+        self.write("KernelSU/kernel/include/uapi/supercall.h", "DECLARE(__u32, KERNEL_SU_UAPI_VERSION, 6);\n")
         missing = Path(self.temp.name) / "missing.patch"
         with patch.object(kernel_builder, "RELEASE_PATCH", missing):
             with self.assertRaisesRegex(RuntimeError, "patch is missing"):
@@ -131,6 +131,14 @@ class ReleaseBuildTests(unittest.TestCase):
         with patch.object(kernel_builder, "RELEASE_PATCH", invalid):
             with self.assertRaises(subprocess.CalledProcessError):
                 self.builder.apply_pinned_patch()
+
+    def test_missing_common_compatibility_patch_is_fatal_before_applying(self):
+        missing = Path(self.temp.name) / 'missing-common.patch'
+        with patch.object(kernel_builder, 'COMMON_PATCH', missing), \
+                patch.object(self.builder, '_run_cmd') as run:
+            with self.assertRaisesRegex(RuntimeError, 'common compatibility patch is missing'):
+                self.builder.apply_common_compatibility_patch()
+        run.assert_not_called()
 
     def test_all_external_repositories_checkout_and_assert_the_exact_recipe(self):
         target = self.builder.config.target
@@ -264,41 +272,40 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertEqual(commands[2], f"git checkout {self.builder.config.target.kernelsu_commit}")
         verify.assert_called_once_with(self.builder.work_dir / "KernelSU", self.builder.config.target.kernelsu_commit)
 
-    def test_manager_only_release_keeps_real_backend_makefile_and_rejects_uapi6_baseline(self):
+    def test_manager_only_release_keeps_native_uapi_and_rejects_older_baseline(self):
         from dataclasses import replace
         self.builder.config = release_config(target=replace(
             self.builder.config.target, tag="v4.2.2", release_commit="a" * 40,
             manager_version=40995, apk_name="SukiSU_v4.2.2_40995-release.apk", apk_sha256="b" * 64))
         header = self.write("KernelSU/kernel/include/uapi/supercall.h",
-                            "DECLARE(__u32, KERNEL_SU_UAPI_VERSION, 2);\n")
+                            "DECLARE(__u32, KERNEL_SU_UAPI_VERSION, 6);\n")
         makefile = self.write("KernelSU/kernel/Makefile",
                              "KSU_VERSION     := $(if $(LOCAL_COUNT),$(shell expr $(VERSION_BASE) + $(LOCAL_COUNT) - $(VERSION_OFFSET)),13000)\n"
                              "VERSION_TAG     := $(or $(KSU_GITHUB_VER),$(git_latest_tag),4.2.1)\n"
                              "KSU_VERSION_FULL := $(if $(call git_short_sha),v$(VERSION_TAG)-$(call git_short_sha)@$(call git_branch),v$(VERSION_TAG)-$(REPO_NAME)-unknown@unknown)\n"
                              'KSU_GITHUB_VER   := $(shell $(CURL_BIN) -s "$(GITHUB_API_BASE)/releases/latest" 2>/dev/null)\n')
         patch_file = Path(self.temp.name) / "release.patch"
-        patch_file.write_text(
-            "diff --git a/kernel/include/uapi/supercall.h b/kernel/include/uapi/supercall.h\n"
-            "--- a/kernel/include/uapi/supercall.h\n"
-            "+++ b/kernel/include/uapi/supercall.h\n"
-            "@@ -1 +1,2 @@\n"
-            "-DECLARE(__u32, KERNEL_SU_UAPI_VERSION, 2);\n"
-            "+DECLARE(__u32, KERNEL_SU_UAPI_VERSION, 5);\n"
-            "+DECLARE(__u32, KSU_GET_INFO_FLAG_BUNDLED, (1U << 4));\n")
+        import difflib
+        original_makefile = makefile.read_text()
+        patch_file.write_text(''.join(difflib.unified_diff(
+            original_makefile.splitlines(True),
+            ('# audited source patch\n' + original_makefile).splitlines(True),
+            fromfile='a/kernel/Makefile', tofile='b/kernel/Makefile')))
+        original_header = header.read_bytes()
         with patch.object(kernel_builder, "RELEASE_PATCH", patch_file):
             self.builder.apply_pinned_patch()
-        self.assertIn("KERNEL_SU_UAPI_VERSION, 5", header.read_text())
-        self.assertIn("KSU_VERSION     := 40994\n", makefile.read_text())
-        self.assertIn("VERSION_TAG     := 4.2.1\n", makefile.read_text())
-        self.assertIn("KSU_VERSION_FULL := v4.2.1-ee35e654@builtin\n", makefile.read_text())
+        self.assertEqual(header.read_bytes(), original_header)
+        self.assertIn("KSU_VERSION     := 41049\n", makefile.read_text())
+        self.assertIn("VERSION_TAG     := 4.2.1-r1\n", makefile.read_text())
+        self.assertIn("KSU_VERSION_FULL := v4.2.1-r1-ce75122b@builtin\n", makefile.read_text())
         self.assertNotIn("/releases/latest", makefile.read_text())
-        self.assertIn("KSU_GITHUB_VER   := 4.2.1\n", makefile.read_text())
+        self.assertIn("KSU_GITHUB_VER   := 4.2.1-r1\n", makefile.read_text())
         self.assertNotIn("4.2.2", makefile.read_text())
         self.assertNotIn("40995", makefile.read_text())
-        header.write_text("DECLARE(__u32, KERNEL_SU_UAPI_VERSION, 6);\n")
+        header.write_text("DECLARE(__u32, KERNEL_SU_UAPI_VERSION, 5);\n")
         with patch.object(kernel_builder, "RELEASE_PATCH", patch_file), \
                 patch.object(self.builder, "_run_cmd") as run:
-            with self.assertRaisesRegex(RuntimeError, "UAPI2 baseline"):
+            with self.assertRaisesRegex(RuntimeError, "native UAPI baseline"):
                 self.builder.apply_pinned_patch()
         run.assert_not_called()
 
@@ -372,7 +379,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.builder.config = release_config(target=replace(
             self.builder.config.target, tag="v4.2.2", release_commit="a" * 40,
             manager_version=40995, apk_name="SukiSU_v4.2.2_40995-release.apk", apk_sha256="b" * 64))
-        self.write("KernelSU/kernel/Makefile", "KSU_VERSION := 40994\n")
+        self.write("KernelSU/kernel/Makefile", "KSU_VERSION := 41049\n")
         self.write("sukisu-setup.sh", "# setup\n")
         self.write("release-resolved-manifest.xml", "<manifest/>\n")
         source_contract = Path(self.temp.name) / "contract.py"
@@ -387,19 +394,19 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertEqual(len(verify.call_args_list), 5)
         data = json.loads((self.builder.work_dir / "release-manifest.json").read_text())
         self.assertEqual(data["kernelsu_commit"], self.builder.config.target.kernelsu_commit)
-        self.assertIn("KernelSU 40994 / UAPI 5", data["target"])
+        self.assertIn("KernelSU 41049 / UAPI 6", data["target"])
         self.assertEqual(len(data["source_contract_sha256"]), 64)
         self.assertEqual(data["release_tag"], "v4.2.2")
         self.assertEqual(data["release_commit"], "a" * 40)
         self.assertEqual(data["builtin_compatibility_commit"], self.builder.config.target.kernelsu_commit)
         self.assertEqual(data["anykernel_commit"], self.builder.config.target.anykernel_commit)
         self.assertEqual(data["manager_version"], self.builder.config.target.manager_version)
-        self.assertEqual(data["backend_tag"], "v4.2.1")
-        self.assertEqual(data["backend_version"], 40994)
+        self.assertEqual(data["backend_tag"], "v4.2.1-r1")
+        self.assertEqual(data["backend_version"], 41049)
         snapshot = json.loads((self.builder.work_dir / "release-target.json").read_text())
         self.assertEqual(snapshot["tag"], self.builder.config.target.tag)
         self.assertEqual(snapshot["manager_version"], self.builder.config.target.manager_version)
-        self.assertEqual(snapshot["version"], 40994)
+        self.assertEqual(snapshot["version"], 41049)
         self.assertEqual(snapshot["kernelsu_commit"], self.builder.config.target.kernelsu_commit)
 
 

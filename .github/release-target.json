@@ -1,10 +1,10 @@
 {
-  "tag": "v4.2.1",
-  "release_commit": "fd2a85151c8312fd9b4237db9ba827dcea692228",
-  "version": 40994,
-  "uapi": 5,
-  "features": 7,
-  "kernelsu_commit": "ee35e65428054476c279eae59f7f2bba272040b9",
+  "tag": "v4.2.1-r1",
+  "release_commit": "a619544c9f68da80c6c3667501ec353be8ae77da",
+  "version": 41049,
+  "uapi": 6,
+  "features": 17,
+  "kernelsu_commit": "ce75122bec7423e0f1fa06e3e9a174085c5231ab",
   "susfs_commit": "9892175b4acec7ee844e113b8d02c0f4d12cdfac",
   "susfs_version": "2.3.0",
   "patch_commit": "547ae94bcaec53d030398f857950c64662043a5d",
@@ -17,10 +17,10 @@
     "2024-05"
   ],
   "revision": "r13",
-  "apk_name": "SukiSU_v4.2.1_40994-release.apk",
-  "apk_sha256": "c7f69280cf468e8415c585ff31f963d0147386831217a1e89b822afddc5f40ed",
+  "apk_name": "SukiSU_v4.2.1-r1_41049-release.apk",
+  "apk_sha256": "73a0a2d91f06445ac841ea81ea600f0ae9d3997cbf45e58aaa27b9a600779dcb",
   "manager_certificate_sha256": "947ae944f3de4ed4c21a7e4f7953ecf351bfa2b36239da37a34111ad29993eef",
-  "backend_tag": "v4.2.1",
-  "manager_version": 40994,
-  "source_fingerprint": "f85cff897e1ad2852f85c84949e803ca3415e0515b598410f303edf34dc5ac5d"
+  "backend_tag": "v4.2.1-r1",
+  "manager_version": 41049,
+  "source_fingerprint": "f86e67366d5b0149fafaf1ed0a935fcc5944ab69f00c5f86dcfed0a3c3011284"
 }

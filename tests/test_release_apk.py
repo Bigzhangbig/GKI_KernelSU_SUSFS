@@ -1,7 +1,8 @@
 """Portable APK metadata parsing, refusal cases, and optional signed-APK check.
 
 Set RELEASE_APK_FIXTURE and APKSIGNER to run the real official APK integration.
-Synthetic fixtures test binary parsers; mocks below cover signer CLI failures only.
+Synthetic fixtures test binary parsers and library selection; mocks isolate the
+external signature verifier, whose real behavior is covered by integration.
 """
 import os
 from pathlib import Path
@@ -152,14 +153,68 @@ class SignatureRefusalTests(unittest.TestCase):
             inspect_release_apk(self.apk, apksigner="apksigner")
 
 
+class NativeLibrarySelectionTests(unittest.TestCase):
+    def inspect_libraries(self, libraries):
+        with tempfile.TemporaryDirectory() as temporary:
+            apk = Path(temporary) / "synthetic.apk"
+            with zipfile.ZipFile(apk, "w") as archive:
+                archive.writestr("AndroidManifest.xml", manifest())
+                for name, data in libraries.items():
+                    archive.writestr(name, data)
+            with patch("release_apk._verify_signature", return_value="a" * 64):
+                return inspect_release_apk(apk)
+
+    def test_randomized_name_is_selected_by_exact_exported_symbol(self):
+        unrelated = manager_elf().replace(b"getManagerUAPIVersion", b"getUnknownUAPIVersion")
+        result = self.inspect_libraries({
+            "lib/arm64-v8a/libunrelated.so": unrelated,
+            "lib/arm64-v8a/librandomized.so": manager_elf(struct.pack(
+                "<II", 0x528000c0, 0xd65f03c0)),
+            "lib/x86_64/libkernelsu.so": b"not an ARM64 library"})
+        self.assertEqual(result["uapi"], 6)
+
+    def test_original_library_name_remains_supported(self):
+        self.assertEqual(self.inspect_libraries({
+            "lib/arm64-v8a/libkernelsu.so": manager_elf()})["uapi"], 5)
+
+    def test_no_exact_symbol_or_wrong_abi_is_rejected(self):
+        wrong_symbol = manager_elf().replace(b"getManagerUAPIVersion", b"getUnknownUAPIVersion")
+        for libraries in ({"lib/arm64-v8a/libkernelsu.so": wrong_symbol},
+                          {"lib/arm64-v8a/libdecoy.so": wrong_symbol +
+                           b"Java_com_sukisu_ultra_Natives_getManagerUAPIVersion\0"},
+                          {"lib/x86_64/libkernelsu.so": manager_elf()},
+                          {"assets/libkernelsu.so": manager_elf()}):
+            with self.subTest(libraries=list(libraries)), self.assertRaisesRegex(ValueError, "Missing.*UAPI"):
+                self.inspect_libraries(libraries)
+
+    def test_two_candidates_are_rejected_even_when_they_agree(self):
+        with self.assertRaisesRegex(ValueError, "ambiguous|Ambiguous"):
+            self.inspect_libraries({"lib/arm64-v8a/libkernelsu.so": manager_elf(),
+                                    "lib/arm64-v8a/librandomized.so": manager_elf()})
+
+    def test_invalid_candidate_cannot_be_ignored_in_favor_of_valid_library(self):
+        bad_code = manager_elf(struct.pack("<II", 0x528000a1, 0xd65f03c0))
+        for invalid in (bad_code, manager_elf(duplicate=True), b"not ELF"):
+            with self.subTest(invalid=invalid[:20]), self.assertRaises(ValueError):
+                self.inspect_libraries({"lib/arm64-v8a/libkernelsu.so": manager_elf(),
+                                        "lib/arm64-v8a/librandomized.so": invalid})
+
+
 @unittest.skipUnless(os.environ.get("RELEASE_APK_FIXTURE"), "set RELEASE_APK_FIXTURE for a real signed APK")
 class OfficialApkIntegration(unittest.TestCase):
     def test_real_official_apk_signature_metadata_and_machine_code(self):
         result = inspect_release_apk(Path(os.environ["RELEASE_APK_FIXTURE"]))
+        official = {
+            "c7f69280cf468e8415c585ff31f963d0147386831217a1e89b822afddc5f40ed":
+                ("v4.2.1", 40994, 5),
+            "73a0a2d91f06445ac841ea81ea600f0ae9d3997cbf45e58aaa27b9a600779dcb":
+                ("v4.2.1-r1", 41049, 6)}
+        self.assertIn(result["sha256"], official, "Unreviewed official APK fixture")
+        name, code, uapi = official[result["sha256"]]
         self.assertEqual(result, {
-            "package": "com.sukisu.ultra", "version_name": "v4.2.1", "version_code": 40994,
-            "uapi": 5, "certificate_sha256": "947ae944f3de4ed4c21a7e4f7953ecf351bfa2b36239da37a34111ad29993eef",
-            "sha256": "c7f69280cf468e8415c585ff31f963d0147386831217a1e89b822afddc5f40ed"})
+            "package": "com.sukisu.ultra", "version_name": name, "version_code": code,
+            "uapi": uapi, "certificate_sha256": "947ae944f3de4ed4c21a7e4f7953ecf351bfa2b36239da37a34111ad29993eef",
+            "sha256": result["sha256"]})
 
 
 if __name__ == "__main__":
