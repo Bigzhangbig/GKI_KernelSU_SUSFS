@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / ".github/workflows/
 from release_target import load_release_target
 import contract_helpers as base
 from test_mount_hide_contract import check_source as check_mount_hide_source
+from test_selinux_hide_contract import check_sources as check_selinux_hide_sources
 
 TARGET = load_release_target()
 
@@ -291,6 +292,7 @@ int main(void) {
 
 
 def common_contract(source, common):
+    check_selinux_hide_sources(source, common)
     kernel = source / "kernel"
     require_text(kernel / "Makefile", [
         rf"(?m)^KSU_VERSION\s*:= {TARGET.version}$",

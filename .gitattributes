@@ -1,2 +1,2 @@
 # Unified diff context lines require a leading space, including empty/tabbed lines.
-.github/workflows/patches/*.patch whitespace=-blank-at-eol,-space-before-tab
+.github/workflows/patches/*.patch whitespace=-blank-at-eol,-blank-at-eof,-space-before-tab

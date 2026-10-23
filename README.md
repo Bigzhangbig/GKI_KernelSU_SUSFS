@@ -50,3 +50,5 @@ python -m unittest discover -s tests -v
 SuSFS 2.3.0 的现有 exec hooks 尚未接通新版 builtin 的 preinit runner，因此显式定义 `KSU_NO_PREINIT`，不回报 PREINIT 支持，管理器继续使用常规模块启动流程。此构建不宣称支持 preinit。
 
 本地源码补丁另将 mount_hide 文件筛选限定为 procfs，避免普通 ext4/f2fs 文件仅因命名为 `mountinfo`、`mounts` 或 `mountstats` 而被拦截；已用未修复的真实 helper 验证该反例。源码补丁与真实 C 合同的哈希随构建保存。
+
+SuSFS 原补丁中的三个 SELinux 隐藏入口改为调用新版 builtin 的对应实现，保留 UID、运行开关和原始回退门控，避免继续引用新版已移除的 `fake_state`。此适配经真实 wrapper 路由测试与完整内核链接验证后交付；不新增空策略状态来规避链接错误。
