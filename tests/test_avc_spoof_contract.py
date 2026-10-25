@@ -273,10 +273,183 @@ def run_c(code, directory, label, scenarios=("normal",), success=True):
     print(label + ": " + ("pass (" + ", ".join(scenarios) + ")" if success else "failure detected"))
 
 
+def force_unity_harness(source, feature_override=None):
+    feature = feature_override if feature_override is not None else (source / "kernel/policy/feature.c").read_text()
+    extension = (source / "kernel/extension/extension.c").read_text()
+    masks = re.findall(r"static DECLARE_BITMAP\((\w+), KSU_FEATURE_MAX\);", feature)
+    if len(masks) != 2:
+        raise AssertionError("actual feature force bitmap declarations missing")
+    def without_includes(text):
+        return re.sub(r"^#include[^\n]*\n", "", text, flags=re.M)
+    headers = without_includes((source / "kernel/policy/feature.h").read_text())
+    headers += without_includes((source / "kernel/extension/extension.h").read_text())
+    enum = re.search(r"enum ksu_extension_id \{.*?\n\};",
+                     (source / "kernel/include/uapi/extension.h").read_text(), re.S).group()
+    return r'''
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <errno.h>
+#include <limits.h>
+typedef uint32_t u32;
+typedef uint64_t u64;
+#define __init
+#define __exit
+#define __user
+#define __read_mostly
+#define KERNEL_VERSION(a,b,c) (((a)<<16)|((b)<<8)|(c))
+#define LINUX_VERSION_CODE KERNEL_VERSION(5,10,209)
+#define pr_info(...) ((void)0)
+#define pr_err(...) ((void)0)
+#define pr_warn(...) ((void)0)
+#define pr_debug(...) ((void)0)
+#define DEFINE_MUTEX(name) int name
+#define mutex_lock(ptr) ((void)(ptr))
+#define mutex_unlock(ptr) ((void)(ptr))
+#define DECLARE_BITMAP(name,bits) unsigned long name[((bits)+63)/64]
+#define set_bit(bit,map) ((map)[(bit)/64] |= 1UL << ((bit)%64))
+#define clear_bit(bit,map) ((map)[(bit)/64] &= ~(1UL << ((bit)%64)))
+#define test_bit(bit,map) (((map)[(bit)/64] >> ((bit)%64)) & 1UL)
+#define for_each_set_bit(bit,map,size) for ((bit)=0;(bit)<(size);++(bit)) if(test_bit(bit,map))
+#define READ_ONCE(x) (x)
+#define WRITE_ONCE(x,value) ((x)=(value))
+#define WARN_ON_ONCE(x) (x)
+#define smp_wmb() ((void)0)
+#define KERNEL_PARAM_OPS_FL_NOARG 1
+#define module_param_cb(...)
+struct kernel_param { int unused; };
+struct kernel_param_ops { int flags; int (*set)(const char *,const struct kernel_param *); };
+static char *host_strchrnul(const char *p,int c) { const char *end=strchr(p,c);return (char *)(end ? end : p+strlen(p)); }
+#define strchrnul host_strchrnul
+static int kstrtou64(const char *s,unsigned base,u64 *out) {
+    char *end; errno=0;
+    if (!s || !*s || *s=='-') return -EINVAL;
+    unsigned long long value=strtoull(s,&end,base);
+    if (errno || *end) return -EINVAL;
+    *out=value; return 0;
+}
+static int kstrtou32(const char *s,unsigned base,u32 *out) {
+    u64 value; int ret=kstrtou64(s,base,&value);
+    if (ret || value>UINT32_MAX) return -EINVAL;
+    *out=(u32)value; return 0;
+}
+''' + (source / "kernel/include/uapi/feature.h").read_text() + '\n' + enum + '\n' + headers + r'''
+static u64 low_feature_value, avc_feature_value, extension_value;
+static int low_feature_calls, avc_feature_calls, extension_calls;
+static bool fail_feature, fail_extension;
+static int get_low(u64 *value) { *value=low_feature_value; return 0; }
+static int get_avc(u64 *value) { *value=avc_feature_value; return 0; }
+static int set_low(u64 value) { ++low_feature_calls; low_feature_value=value; return 0; }
+static int set_avc(u64 value) { ++avc_feature_calls; if(fail_feature)return -EAGAIN; avc_feature_value=value;return 0; }
+static int extension_get_stub(u32 id,u64 *value) { (void)id; *value=extension_value; return 0; }
+static int extension_set_stub(u32 id,u64 value) { if(id!=3)return -EINVAL; ++extension_calls;if(fail_extension)return -EIO;extension_value=value;return 0; }
+static int extension_io_stub(u32 id,void *arg) { (void)id;(void)arg;return 0; }
+static void extension_force_stub(u32 id,u64 value) { (void)id;(void)value; }
+static int extension_wipe_stub(u32 id) { (void)id;return 0; }
+static const struct ksu_extension_handler_ops ksu_extension_kpm_ops={extension_get_stub,extension_set_stub};
+static const struct ksu_extension_handler_ops ksu_extension_dynamic_manager_ops={extension_get_stub,extension_set_stub};
+static const struct ksu_extension_handler_ops ksu_extension_susfs_ops={extension_get_stub,extension_set_stub};
+#define ksu_extension_kpm_io extension_io_stub
+#define ksu_extension_kpm_apply_forced extension_force_stub
+#define ksu_extension_cpu_spoof_io extension_io_stub
+#define ksu_extension_umount_paths_io extension_io_stub
+#define ksu_extension_umount_paths_wipe extension_wipe_stub
+#define ksu_extension_dynamic_manager_io extension_io_stub
+''' + without_includes(extension) + '\n' + without_includes(feature) + r'''
+_Static_assert(sizeof(unsigned long)==8,"target and host must use 64-bit bitmap words");
+_Static_assert(sizeof(FEATURE_MASK)==157*sizeof(unsigned long),"feature bitmap must cover AVC10003");
+_Static_assert(sizeof(forced_mask)==sizeof(unsigned long),"extension bitmap stays at five IDs");
+#define CHECK(x) do { if(!(x)){fprintf(stderr,"force unity CHECK line %d: %s\n",__LINE__,#x);return 1;} } while(0)
+int main(int argc,char **argv) {
+    const char *scenario=argc>1?argv[1]:"normal";
+    const struct ksu_feature_handler low={3,"adb_root",get_low,set_low};
+    const struct ksu_feature_handler avc={10003,"avc_spoof",get_avc,set_avc};
+    ksu_feature_init();ksu_extension_init();ksu_extension_register_all();
+    CHECK(ksu_register_feature_handler(&low)==0 && ksu_register_feature_handler(&avc)==0);
+    CHECK((void *)FEATURE_MASK!=(void *)forced_mask && (void *)FEATURE_PENDING!=(void *)forced_pending);
+    CHECK(!ksu_feature_is_forced(3) && !ksu_extension_is_forced(3));
+    if(!strcmp(scenario,"feature-low")) {
+        CHECK(force_feature_param_set("3:101",NULL)==0);
+        CHECK(ksu_feature_is_forced(3) && !ksu_extension_is_forced(3));
+        CHECK(test_bit(3,FEATURE_PENDING) && !test_bit(3,forced_pending));
+        CHECK(ksu_extension_set(3,202)==0 && ksu_set_feature(3,404)==-EPERM);
+        ksu_feature_apply_forced();
+        CHECK(low_feature_value==101 && !test_bit(3,FEATURE_PENDING) && extension_value==202);
+        ksu_extension_apply_forced();CHECK(low_feature_calls==1 && extension_calls==1);
+        return 0;
+    }
+    if(!strcmp(scenario,"extension-low")) {
+        CHECK(force_extension_param_set("3:202",NULL)==0);
+        CHECK(ksu_extension_is_forced(3) && !ksu_feature_is_forced(3));
+        CHECK(test_bit(3,forced_pending) && !test_bit(3,FEATURE_PENDING));
+        CHECK(ksu_set_feature(3,101)==0 && ksu_extension_set(3,404)==-EPERM);
+        ksu_extension_apply_forced();
+        CHECK(extension_value==202 && !test_bit(3,forced_pending) && low_feature_value==101);
+        ksu_feature_apply_forced();CHECK(low_feature_calls==1 && extension_calls==1);
+        return 0;
+    }
+    CHECK(force_feature_param_set("avc_spoof:111",NULL)==0);
+    CHECK(ksu_feature_is_forced(10003) && test_bit(10003,FEATURE_PENDING));
+    CHECK(!ksu_extension_is_forced(3) && !test_bit(3,forced_pending));
+    CHECK(force_extension_param_set("dynamic_manager:222",NULL)==0);
+    CHECK(ksu_extension_is_forced(3) && !ksu_feature_is_forced(3));
+    CHECK(ksu_set_feature(3,999)==0 && low_feature_value==999);
+    CHECK(ksu_set_feature(10003,999)==-EPERM && ksu_extension_set(3,999)==-EPERM);
+    CHECK(force_feature_param_set("3:333",NULL)==0);
+    ksu_feature_apply_forced();
+    CHECK(avc_feature_value==111 && low_feature_value==333 && extension_calls==0);
+    CHECK(!test_bit(10003,FEATURE_PENDING) && !test_bit(3,FEATURE_PENDING) && test_bit(3,forced_pending));
+    ksu_extension_apply_forced();
+    CHECK(extension_value==222 && extension_calls==1 && !test_bit(3,forced_pending));
+    CHECK(ksu_feature_is_forced(10003) && ksu_feature_is_forced(3) && ksu_extension_is_forced(3));
+    CHECK(force_extension_param_set("3:444",NULL)==0);ksu_feature_apply_forced();
+    CHECK(test_bit(3,forced_pending));ksu_extension_apply_forced();CHECK(extension_value==444);
+    CHECK(force_feature_param_set("3:555",NULL)==0);ksu_extension_apply_forced();
+    CHECK(test_bit(3,FEATURE_PENDING));ksu_feature_apply_forced();CHECK(low_feature_value==555);
+    fail_feature=true;CHECK(force_feature_param_set("10003:666",NULL)==0);ksu_feature_apply_forced();
+    CHECK(test_bit(10003,FEATURE_PENDING) && avc_feature_value==111);
+    ksu_extension_apply_forced();CHECK(test_bit(10003,FEATURE_PENDING));
+    fail_feature=false;ksu_feature_apply_forced();CHECK(!test_bit(10003,FEATURE_PENDING) && avc_feature_value==666);
+    fail_extension=true;CHECK(force_extension_param_set("3:777",NULL)==0);ksu_extension_apply_forced();
+    CHECK(test_bit(3,forced_pending) && extension_value==444);
+    ksu_feature_apply_forced();CHECK(test_bit(3,forced_pending));
+    fail_extension=false;ksu_extension_apply_forced();CHECK(!test_bit(3,forced_pending) && extension_value==777);
+    u64 value=0;bool supported=false;
+    CHECK(ksu_get_feature(10003,&value,&supported)==0 && supported && value==666);
+    CHECK(ksu_extension_get(3,&value,&supported)==0 && supported && value==777);
+    puts("actual feature+extension unity: 157/1-word declarations, AVC10003/shared-low3 force masks and replay queues isolated");
+    return 0;
+}
+'''.replace("FEATURE_MASK", masks[0]).replace("FEATURE_PENDING", masks[1])
+
+
+def check_force_unity(source, directory):
+    code = force_unity_harness(source)
+    run_c(code, directory, "actual_force_unity", ("normal", "feature-low", "extension-low"))
+    old = code.replace("forced_feature_mask", "forced_mask").replace("forced_feature_pending", "forced_pending")
+    old_path = directory / "old_force_unity.c"
+    old_path.write_text(old)
+    compiled = subprocess.run([os.environ.get("CC", "cc"), "-std=c11", "-fsyntax-only", str(old_path)], capture_output=True, text=True)
+    if compiled.returncode == 0 or not all(name in compiled.stderr for name in ("forced_mask", "forced_pending")) or not re.search(r"different type|conflicting types", compiled.stderr):
+        raise AssertionError("old 10004/5 unity collision must fail for both bitmap types:\n" + compiled.stderr)
+    print("original 10004/5 unity bitmap declarations: type conflict detected")
+    feature = (source / "kernel/policy/feature.c").read_text()
+    for label, before, after in (
+        ("wrong_feature_force_mask", "test_bit(feature_id, forced_feature_mask)", "test_bit(feature_id, forced_mask)"),
+        ("wrong_feature_pending_queue", "clear_bit(id, forced_feature_pending)", "clear_bit(id, forced_pending)"),
+    ):
+        if before not in feature:
+            raise AssertionError("actual feature isolation mutation target missing: " + label)
+        run_c(force_unity_harness(source, feature.replace(before, after)), directory, label, ("feature-low",), False)
+
+
 def check_source(source, commit=BACKPORT_COMMIT):
     text, boot, arch, feature = source_contract(source, commit)
     with tempfile.TemporaryDirectory(prefix="sukisu-avc-contract-") as tmp:
         directory = Path(tmp)
+        check_force_unity(source, directory)
         run_c(harness(text, boot, arch, feature), directory, "actual_avc", (
             "normal", "sid-su", "sid-ksu", "sid-priv-app", "allocation", "probe-registration", "feature-registration"))
         run_c(harness(text, boot, arch, feature, False), directory, "actual_avc_no_kprobes")

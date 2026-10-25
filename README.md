@@ -57,6 +57,6 @@ SuSFS 原补丁中的三个 SELinux 隐藏入口改为调用新版 builtin 的�
 
 官方 builtin 分支尚未同步 r2 的内核提交。本配方保留已验证的 `ce75122bec7423e0f1fa06e3e9a174085c5231ab` 后端，并从官方 `ff7dfe2dbc39f78a08ee6fcff23bc615b0f54ea2` 移植 r2 唯一的内核增量：AVC audit 日志 target SID 替换功能。版本字符串的 `+avc-ff7dfe2d` 与构建清单明确记录来源，未将旧源码仅改数字当作新内核。
 
-移植仅适配 builtin 的统一编译单元、初始化与启动完成入口、头文件位置和局部静态符号名称。UAPI仍为6，新增 feature ID10003，GET_INFO的features字段上限为10004；该上限不代表有10004项功能。
+移植仅适配 builtin 的统一编译单元、初始化与启动完成入口、头文件位置和局部静态符号名称。feature 与 extension 的同名强制状态位图分别命名，使统一编译仍保持两组状态隔离。UAPI仍为6，新增 feature ID10003，GET_INFO的features字段上限为10004；该上限不代表有10004项功能。
 
 功能依赖 `CONFIG_KPROBES=y`，官方实现仅修改 slow_avc_audit 的日志渲染 SID，不改变已完成的权限决策。首次启用时SID解析或探针注册失败不会激活探针；官方GET返回的是配置开关，并不证明探针在手机上已激活。实际SID、探针注册及与SuSFS日志处理的组合效果须刷入后另验；关闭此开关不会关闭SuSFS自己的日志处理。
