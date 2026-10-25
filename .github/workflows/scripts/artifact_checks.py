@@ -12,7 +12,8 @@ from pathlib import Path
 
 MANIFEST_NAME = "release-manifest.json"
 RESOLVED_NAME = "release-resolved-manifest.xml"
-FUNCTIONS = ("do_get_info", "do_get_info_legacy", "do_report_event", "do_extension", "do_lookup_symbols")
+FUNCTIONS = ("do_get_info", "do_get_info_legacy", "do_report_event", "do_extension", "do_lookup_symbols",
+             "avc_slow_audit_pre_handler", "slow_avc_audit")
 
 
 def original_files(target):
@@ -99,6 +100,8 @@ def check_archive(source: Path, target) -> tuple[bytes, dict]:
         require(f"{key}=y" in lines, f"{key} is not enabled")
     for key in ("CONFIG_KPM", "CONFIG_KSU_DEBUG"):
         require(f"# {key} is not set" in lines, f"{key} is enabled or missing")
+    if target.avc_backport_commit:
+        require("CONFIG_KPROBES=y" in lines, "CONFIG_KPROBES is required for the AVC backport")
     require(target.manager_certificate_sha256.encode() in image, "official certificate digest missing from Image")
     susfs_version = "v" + target.susfs_version
     require(susfs_version.encode() in image, "SuSFS version string missing from Image")

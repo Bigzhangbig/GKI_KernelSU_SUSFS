@@ -1,6 +1,8 @@
+diff --git a/kernel/Makefile b/kernel/Makefile
+index 8492b9c..4c08883 100644
 --- a/kernel/Makefile
 +++ b/kernel/Makefile
-@@ -20,40 +20,9 @@
+@@ -20,40 +20,9 @@ endif
  
  MDIR    := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
  
@@ -43,7 +45,7 @@
  
  REPO_OWNER  := SukiSU-Ultra
  REPO_NAME   := SukiSU-Ultra
-@@ -73,11 +42,10 @@
+@@ -73,11 +42,10 @@ git_branch       = $(shell cd $(KSU_SRC) && $(GIT_BIN) rev-parse --abbrev-ref HE
  git_commit_count = $(shell cd $(KSU_SRC) && $(GIT_BIN) rev-list --count $(REPO_BRANCH) 2>/dev/null)
  git_latest_tag   = $(shell cd $(KSU_SRC) && $(GIT_BIN) describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
  
@@ -56,6 +58,243 @@
  LOCAL_COUNT     := $(if $(GITHUB_COMMITS),$(GITHUB_COMMITS),$(git_commit_count))
  KSU_VERSION     := $(if $(LOCAL_COUNT),$(shell expr $(VERSION_BASE) + $(LOCAL_COUNT) - $(VERSION_OFFSET)),13000)
  VERSION_TAG     := $(or $(KSU_GITHUB_VER),$(git_latest_tag),4.2.1)
+diff --git a/kernel/feature/avc_spoof.c b/kernel/feature/avc_spoof.c
+new file mode 100644
+index 0000000..e0597b5
+--- /dev/null
++++ b/kernel/feature/avc_spoof.c
+@@ -0,0 +1,215 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Adapted from KOWX712/KernelSU avc spoofing (GPL-2.0-only). */
++#include <linux/security.h>
++#include <linux/atomic.h>
++#include <linux/version.h>
++#include <linux/string.h>
++
++#include "policy/feature.h"
++#include "feature/avc_spoof.h"
++#include "klog.h"
++
++/*
++ * AVC logging receives a target SID.  This feature changes only the SID used
++ * for audit rendering; it does not change the AVC decision or SELinux policy.
++ */
++static u32 avc_su_sid;
++static u32 avc_ksu_sid;
++static u32 avc_priv_app_sid;
++
++/* Disabled until SIDs are resolved and the boot-completed hook installs the probe. */
++static atomic_t avc_disable_spoof = ATOMIC_INIT(1);
++static bool avc_spoof_enabled = true;
++static bool avc_boot_completed;
++
++#ifdef CONFIG_KPROBES
++#include <linux/kprobes.h>
++#include <linux/slab.h>
++#include "arch.h"
++
++static struct kprobe *avc_slow_audit_kp;
++
++static int avc_slow_audit_pre_handler(struct kprobe *p, struct pt_regs *regs)
++{
++    u32 *tsid;
++
++    if (atomic_read(&avc_disable_spoof))
++        return 0;
++
++    /*
++     * slow_avc_audit changed ABI across Android/Linux versions:
++     *   < 6.4: tsid is the third argument
++     * >= 6.4: tsid is the second argument
++     *
++     * This matches the upstream implementation and keeps the probe from
++     * writing to the state/ssid argument on newer kernels.
++     */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0)
++    tsid = (u32 *)&PT_REGS_PARM2(regs);
++#else
++    tsid = (u32 *)&PT_REGS_PARM3(regs);
++#endif
++
++    if (*tsid == avc_su_sid || *tsid == avc_ksu_sid) {
++        pr_info_ratelimited("avc_spoof: replace tsid %u with %u\n", *tsid, avc_priv_app_sid);
++        *tsid = avc_priv_app_sid;
++    }
++    return 0;
++}
++
++static struct kprobe *avc_init_kprobe(const char *name, kprobe_pre_handler_t handler)
++{
++    struct kprobe *kp = kzalloc(sizeof(*kp), GFP_KERNEL);
++    int ret;
++
++    if (!kp)
++        return NULL;
++
++    kp->symbol_name = name;
++    kp->pre_handler = handler;
++    ret = register_kprobe(kp);
++    pr_info("avc_spoof: register_%s kprobe: %d\n", name, ret);
++    if (ret) {
++        kfree(kp);
++        return NULL;
++    }
++    return kp;
++}
++
++static void avc_destroy_kprobe(struct kprobe **kp_ptr)
++{
++    struct kprobe *kp = *kp_ptr;
++
++    if (!kp)
++        return;
++    unregister_kprobe(kp);
++    synchronize_rcu();
++    kfree(kp);
++    *kp_ptr = NULL;
++}
++#endif /* CONFIG_KPROBES */
++
++static int avc_get_sids(void)
++{
++    int ret;
++
++    ret = security_secctx_to_secid("u:r:su:s0", strlen("u:r:su:s0"), &avc_su_sid);
++    if (ret) {
++        pr_info("avc_spoof: su SID not found\n");
++        return ret;
++    }
++    pr_info("avc_spoof: su SID: %u\n", avc_su_sid);
++
++    ret = security_secctx_to_secid("u:r:ksu:s0", strlen("u:r:ksu:s0"), &avc_ksu_sid);
++    if (ret) {
++        pr_info("avc_spoof: ksu SID not found\n");
++        return ret;
++    }
++    pr_info("avc_spoof: ksu SID: %u\n", avc_ksu_sid);
++
++    ret = security_secctx_to_secid("u:r:priv_app:s0:c512,c768",
++                                   strlen("u:r:priv_app:s0:c512,c768"),
++                                   &avc_priv_app_sid);
++    if (ret) {
++        pr_info("avc_spoof: priv_app SID not found\n");
++        return ret;
++    }
++    pr_info("avc_spoof: priv_app SID: %u\n", avc_priv_app_sid);
++    return 0;
++}
++
++void ksu_avc_spoof_disable(void)
++{
++#ifdef CONFIG_KPROBES
++    pr_info("avc_spoof: unregister slow_avc_audit kprobe\n");
++    avc_destroy_kprobe(&avc_slow_audit_kp);
++#endif
++    atomic_set(&avc_disable_spoof, 1);
++    pr_info("avc_spoof: slow_avc_audit spoofing disabled\n");
++}
++
++void ksu_avc_spoof_enable(void)
++{
++    int ret = avc_get_sids();
++
++    if (ret) {
++        pr_info("avc_spoof: SID resolution failed: %d\n", ret);
++        return;
++    }
++
++#ifdef CONFIG_KPROBES
++    if (!avc_slow_audit_kp) {
++        pr_info("avc_spoof: register slow_avc_audit kprobe\n");
++        avc_slow_audit_kp = avc_init_kprobe("slow_avc_audit", avc_slow_audit_pre_handler);
++        if (!avc_slow_audit_kp) {
++            atomic_set(&avc_disable_spoof, 1);
++            pr_err("avc_spoof: failed to register slow_avc_audit kprobe\n");
++            return;
++        }
++    }
++    atomic_set(&avc_disable_spoof, 0);
++    pr_info("avc_spoof: slow_avc_audit spoofing enabled\n");
++#else
++    pr_err("avc_spoof: CONFIG_KPROBES is disabled\n");
++#endif
++}
++
++static int avc_spoof_feature_get(u64 *value)
++{
++    *value = avc_spoof_enabled ? 1 : 0;
++    return 0;
++}
++
++static int avc_spoof_feature_set(u64 value)
++{
++    bool enable = value != 0;
++
++    if (enable == avc_spoof_enabled) {
++        pr_info("avc_spoof: no need to change\n");
++        return 0;
++    }
++
++    avc_spoof_enabled = enable;
++    if (avc_boot_completed) {
++        if (enable)
++            ksu_avc_spoof_enable();
++        else
++            ksu_avc_spoof_disable();
++    }
++    pr_info("avc_spoof: set to %d\n", enable);
++    return 0;
++}
++
++static const struct ksu_feature_handler avc_spoof_handler = {
++    .feature_id = KSU_FEATURE_AVC_SPOOF,
++    .name = "avc_spoof",
++    .get_handler = avc_spoof_feature_get,
++    .set_handler = avc_spoof_feature_set,
++};
++static bool avc_spoof_registered;
++
++void ksu_avc_spoof_late_init(void)
++{
++    avc_boot_completed = true;
++    if (avc_spoof_enabled)
++        ksu_avc_spoof_enable();
++}
++
++void __init ksu_avc_spoof_init(void)
++{
++#ifndef CONFIG_KPROBES
++    pr_warn("avc_spoof: CONFIG_KPROBES is disabled; feature unavailable\n");
++    return;
++#endif
++    avc_spoof_registered = !ksu_register_feature_handler(&avc_spoof_handler);
++    if (!avc_spoof_registered)
++        pr_err("avc_spoof: failed to register feature handler\n");
++}
++
++void __exit ksu_avc_spoof_exit(void)
++{
++    if (avc_spoof_enabled)
++        ksu_avc_spoof_disable();
++    if (avc_spoof_registered)
++        ksu_unregister_feature_handler(KSU_FEATURE_AVC_SPOOF);
++}
+diff --git a/kernel/feature/avc_spoof.h b/kernel/feature/avc_spoof.h
+new file mode 100644
+index 0000000..865b58c
+--- /dev/null
++++ b/kernel/feature/avc_spoof.h
+@@ -0,0 +1,8 @@
++#ifndef __KSU_H_AVC_SPOOF
++#define __KSU_H_AVC_SPOOF
++
++void ksu_avc_spoof_init(void);
++void ksu_avc_spoof_late_init(void);
++void ksu_avc_spoof_exit(void);
++
++#endif
+diff --git a/kernel/feature/mount_hide.c b/kernel/feature/mount_hide.c
+index fb795ae..559be2e 100644
 --- a/kernel/feature/mount_hide.c
 +++ b/kernel/feature/mount_hide.c
 @@ -7,6 +7,7 @@
@@ -66,7 +305,7 @@
  #include <linux/mutex.h>
  #include <linux/printk.h>
  #include <linux/string.h>
-@@ -65,10 +66,15 @@
+@@ -65,12 +66,17 @@ static const char *const ksu_proc_magic_names[] = { "mountinfo", "mounts", "moun
  static bool ksu_path_is_proc_mount_file(struct file *file)
  {
      char buf[KSU_PROC_MAGIC_NAME_MAX];
@@ -75,10 +314,78 @@
      size_t i;
  
      if (!file || !file->f_path.dentry)
-+        return false;
-+
-+    inode = file_inode(file);
-+    if (!inode || !inode->i_sb || inode->i_sb->s_magic != PROC_SUPER_MAGIC)
          return false;
  
++    inode = file_inode(file);
++    if (!inode || !inode->i_sb || inode->i_sb->s_magic != PROC_SUPER_MAGIC)
++        return false;
++
      name = file->f_path.dentry->d_name.name;
+     if (!name)
+         return false;
+diff --git a/kernel/include/uapi/feature.h b/kernel/include/uapi/feature.h
+index 4e9d562..e8deaa2 100644
+--- a/kernel/include/uapi/feature.h
++++ b/kernel/include/uapi/feature.h
+@@ -18,6 +18,8 @@ enum ksu_feature_id {
+      */
+     KSU_FEATURE_MOUNT_HIDE = 16,
+ 
++    KSU_FEATURE_AVC_SPOOF = 10003,
++
+     KSU_FEATURE_MAX
+ };
+ 
+diff --git a/kernel/ksu_main.c b/kernel/ksu_main.c
+index 4465240..0a5a300 100644
+--- a/kernel/ksu_main.c
++++ b/kernel/ksu_main.c
+@@ -36,6 +36,7 @@
+ #include "feature/sucompat.h"
+ #include "feature/sulog.h"
+ #include "feature/mount_hide.h"
++#include "feature/avc_spoof.h"
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
+ #include "feature/selinux_hide.h"
+ #endif
+@@ -117,6 +118,7 @@
+ #endif
+ #include "feature/shell_su_adb_only.c"
+ #include "feature/mount_hide.c"
++#include "feature/avc_spoof.c"
+ #include "runtime/ksud.c"
+ 
+ #include "sulog/event.c"
+@@ -181,6 +183,8 @@ int __init kernelsu_init(void)
+ 
+     ksu_sulog_init();
+ 
++    ksu_avc_spoof_init();
++
+     ksu_adb_root_init();
+ 
+     ksu_shell_su_adb_only_init();
+diff --git a/kernel/policy/feature.c b/kernel/policy/feature.c
+index 05ae163..a5ddcb5 100644
+--- a/kernel/policy/feature.c
++++ b/kernel/policy/feature.c
+@@ -10,6 +10,7 @@ static const char *const feature_names[KSU_FEATURE_MAX] = {
+     [KSU_FEATURE_SELINUX_HIDE] = "selinux_hide",
+     [KSU_FEATURE_SHELL_SU_ADB_ONLY] = "shell_su_adb_only",
+     [KSU_FEATURE_MOUNT_HIDE] = "mount_hide",
++    [KSU_FEATURE_AVC_SPOOF] = "avc_spoof",
+ };
+ 
+ // Features forced by boot config. Written only while parsing module params
+diff --git a/kernel/runtime/ksud.c b/kernel/runtime/ksud.c
+index ad6c657..c1a0beb 100644
+--- a/kernel/runtime/ksud.c
++++ b/kernel/runtime/ksud.c
+@@ -98,6 +98,7 @@ void on_boot_completed(void)
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
+     ksu_selinux_hide_drop_backup_if_unused();
+ #endif
++    ksu_avc_spoof_late_init();
+ }
+ 
+ #define MAX_ARG_STRINGS 0x7FFFFFFF

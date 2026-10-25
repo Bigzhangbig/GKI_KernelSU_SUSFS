@@ -13,6 +13,7 @@ from release_target import load_release_target
 import contract_helpers as base
 from test_mount_hide_contract import check_source as check_mount_hide_source
 from test_selinux_hide_contract import check_sources as check_selinux_hide_sources
+from test_avc_spoof_contract import check_source as check_avc_source, check_common as check_avc_common
 
 TARGET = load_release_target()
 
@@ -42,7 +43,7 @@ def header_abi(source, compiler):
 #define LINUX_VERSION_CODE KERNEL_VERSION(5, 10, 209)
 #include "uapi/feature.h"
 _Static_assert(KERNEL_SU_UAPI_VERSION == 6, "Release requires UAPI6");
-_Static_assert(KSU_FEATURE_MAX == 17, "Release feature ceiling");
+_Static_assert(KSU_FEATURE_AVC_SPOOF == 10003 && KSU_FEATURE_MAX == 10004, "Release AVC feature ceiling");
 _Static_assert(KSU_GET_INFO_FLAG_LKM == 1 && KSU_GET_INFO_FLAG_MANAGER == 2 &&
                KSU_GET_INFO_FLAG_LATE_LOAD == 4 && KSU_GET_INFO_FLAG_PR_BUILD == 8 &&
                KSU_GET_INFO_FLAG_BUNDLED == 16 && KSU_GET_INFO_FLAG_PREINIT == 32, "Release flags");
@@ -83,7 +84,7 @@ _Static_assert(KSU_MANAGER_GET == 0 && KSU_MANAGER_ADD == 1 && KSU_MANAGER_REMOV
     result = subprocess.run(args, input=checks, capture_output=True, text=True)
     if result.returncode:
         raise AssertionError("official release ABI mismatch:\n" + result.stderr)
-    print("official release ABI: UAPI6, feature17, GET_INFO, lookup22 and extension300 sizes/offsets pass")
+    print("official release ABI: UAPI6, AVC10003/feature10004, GET_INFO, lookup22 and extension300 sizes/offsets pass")
 
 def manager_harness(source):
     declaration = (source / "kernel/include/uapi/manager.h").read_text()
@@ -292,6 +293,7 @@ int main(void) {
 
 
 def common_contract(source, common):
+    check_avc_common(common)
     check_selinux_hide_sources(source, common)
     kernel = source / "kernel"
     require_text(kernel / "Makefile", [
@@ -336,7 +338,7 @@ def common_contract(source, common):
     require_text(common / "Makefile", [rf"(?m)^VERSION = {major}$",
         rf"(?m)^PATCHLEVEL = {minor}$", rf"(?m)^SUBLEVEL = {TARGET.kernel_tuple[2]}$"])
     lines = (common / "arch/arm64/configs/gki_defconfig").read_text().splitlines()
-    for key in ("CONFIG_KSU", "CONFIG_KSU_SUSFS"):
+    for key in ("CONFIG_KSU", "CONFIG_KSU_SUSFS", "CONFIG_KPROBES"):
         values = [line for line in lines if line.startswith(key + "=")]
         if not values or values[-1] != key + "=y":
             raise AssertionError("Release requires effective " + key + "=y")
@@ -360,6 +362,7 @@ def main():
     source = args.source.resolve()
     # This pinned SuSFS integration has no preinit hook; never advertise it.
     preinit_contract(source)
+    check_avc_source(source, TARGET.avc_backport_commit)
     check_mount_hide_source((source / "kernel/feature/mount_hide.c").read_text())
     if args.common is not None:
         common_contract(source, args.common.resolve())

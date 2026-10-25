@@ -50,6 +50,7 @@ class ReleaseTarget:
     apk_name: str
     apk_sha256: str
     manager_certificate_sha256: str
+    avc_backport_commit: str | None = None
 
     @property
     def name(self):
@@ -57,7 +58,8 @@ class ReleaseTarget:
 
     @property
     def full_version(self):
-        return f"{self.backend_tag}-{self.kernelsu_commit[:8]}@builtin"
+        backport = f"+avc-{self.avc_backport_commit[:8]}" if self.avc_backport_commit else ""
+        return f"{self.backend_tag}-{self.kernelsu_commit[:8]}{backport}@builtin"
 
     @property
     def archive_name(self):
@@ -66,11 +68,17 @@ class ReleaseTarget:
 
     @property
     def pins(self):
-        return {key: getattr(self, key) for key in
+        pins = {key: getattr(self, key) for key in
                 ("common_commit", "kernelsu_commit", "susfs_commit", "patch_commit", "anykernel_commit")}
+        if self.avc_backport_commit is not None:
+            pins["avc_backport_commit"] = self.avc_backport_commit
+        return pins
 
 
 def _shape(target):
+    if target.avc_backport_commit is not None and (
+            not isinstance(target.avc_backport_commit, str) or SHA.fullmatch(target.avc_backport_commit) is None):
+        raise ValueError("AVC backport requires a complete official source SHA")
     for key in ("release_commit", "common_commit", "kernelsu_commit", "susfs_commit", "patch_commit", "anykernel_commit"):
         if not isinstance(getattr(target, key), str) or SHA.fullmatch(getattr(target, key)) is None:
             raise ValueError("Release requires a complete source SHA: " + key)

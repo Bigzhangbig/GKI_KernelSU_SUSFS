@@ -180,6 +180,15 @@ class BinaryIdentityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'uapi_version mismatch'):
             verify_get_info_identity(bytes(image), function, metadata, **expected)
 
+    def test_r2_sparse_feature_limit_is_proven_from_record(self):
+        expected = dict(expected_version=41068, expected_features=10004, expected_uapi=6)
+        image, function, metadata = fixture(version=41068, features=10004, uapi=6)
+        proof = verify_get_info_identity(bytes(image), function, metadata, **expected)
+        self.assertEqual((proof['version'], proof['features'], proof['uapi_version']), (41068, 10004, 6))
+        image, function, metadata = fixture(version=41068, features=17, uapi=6)
+        with self.assertRaisesRegex(ValueError, 'features mismatch'):
+            verify_get_info_identity(bytes(image), function, metadata, **expected)
+
     def test_complete_q_record_and_split_d_record_are_decoded(self):
         for split in (False, True):
             with self.subTest(split=split):

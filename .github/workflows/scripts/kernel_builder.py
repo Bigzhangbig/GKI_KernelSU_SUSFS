@@ -480,6 +480,7 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
             "susfs_commit": self.config.target.susfs_commit,
             "patch_commit": self.config.target.patch_commit,
             "anykernel_commit": self.config.target.anykernel_commit,
+            "avc_backport_commit": self.config.target.avc_backport_commit,
             "release_tag": self.config.target.tag,
             "release_commit": self.config.target.release_commit,
             "manager_version": self.config.target.manager_version,
@@ -519,6 +520,8 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
             raise RuntimeError(f"{self.config.target.name} generated .config does not enable KernelSU and SUSFS")
         if any(f"{key}=y" in config_lines for key in ("CONFIG_KSU_DEBUG", "CONFIG_KPM")):
             raise RuntimeError(f"{self.config.target.name} generated .config unexpectedly enables KSU_DEBUG or KPM")
+        if self.config.target.avc_backport_commit and "CONFIG_KPROBES=y" not in config_lines:
+            raise RuntimeError("CONFIG_KPROBES is required for the AVC backport")
         return image
 
 

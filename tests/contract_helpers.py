@@ -81,7 +81,7 @@ def table_entries(table: str) -> dict[str, str]:
 
 
 def host_harness(header: str, dispatch: str, kernel_version: int,
-                 uapi: int = 6, features: int = 17, preinit: bool = True) -> str:
+                 uapi: int = 6, features: int = 10004, preinit: bool = True) -> str:
     declarations = header_declarations(header)
     functions = "\n\n".join(c_function(dispatch, name) for name in FUNCTION_NAMES)
     dispatcher = c_function(dispatch, "ksu_supercall_handle_ioctl")

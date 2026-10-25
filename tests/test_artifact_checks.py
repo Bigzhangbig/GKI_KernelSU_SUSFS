@@ -23,7 +23,7 @@ class ArtifactChecksTests(unittest.TestCase):
         # target, rather than accidentally accepting only the current recipe.
         self.target = replace(load_release_target(), manager_certificate_sha256="a" * 64,
                               susfs_version="9.8.7", kernel_tuple=("android99", "6.1", "23", "2099-01"))
-        enabled = ("KSU", "KSU_SUSFS", "KSU_SUSFS_SUS_PATH", "KSU_SUSFS_SUS_MOUNT",
+        enabled = ("KPROBES", "KSU", "KSU_SUSFS", "KSU_SUSFS_SUS_PATH", "KSU_SUSFS_SUS_MOUNT",
                    "KSU_SUSFS_SUS_MAP", "KSU_SUSFS_SPOOF_UNAME", "KSU_SUSFS_OPEN_REDIRECT")
         self.config = "".join(f"CONFIG_{name}=y\n" for name in enabled)
         self.config += "# CONFIG_KPM is not set\n# CONFIG_KSU_DEBUG is not set\n"
@@ -65,6 +65,7 @@ class ArtifactChecksTests(unittest.TestCase):
     def test_kpm_debug_and_disabled_susfs_are_rejected(self):
         original_image = bytes(self.image)
         for key, before, after in (
+                ("CONFIG_KPROBES", "CONFIG_KPROBES=y", "# CONFIG_KPROBES is not set"),
                 ("CONFIG_KPM", "# CONFIG_KPM is not set", "CONFIG_KPM=y"),
                 ("CONFIG_KSU_DEBUG", "# CONFIG_KSU_DEBUG is not set", "CONFIG_KSU_DEBUG=y"),
                 ("CONFIG_KSU_SUSFS", "CONFIG_KSU_SUSFS=y", "# CONFIG_KSU_SUSFS is not set")):

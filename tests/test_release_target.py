@@ -115,6 +115,26 @@ class LatestReleasePolicyTests(unittest.TestCase):
         self.assertEqual((tag, version), ('v4.2.1-r1', 41049))
         self.assertEqual(found, asset)
 
+    def test_backported_kernel_identity_is_explicit_and_immutable(self):
+        from dataclasses import replace
+        upstream = 'ff7dfe2dbc39f78a08ee6fcff23bc615b0f54ea2'
+        target = replace(self.baseline, tag='v4.2.1-r2', backend_tag='v4.2.1-r2',
+                         version=41068, manager_version=41068, features=10004,
+                         apk_name='SukiSU_v4.2.1-r2_41068-release.apk',
+                         avc_backport_commit=upstream)
+        self.assertEqual(target.full_version, 'v4.2.1-r2-aaaaaaaa+avc-ff7dfe2d@builtin')
+        self.assertEqual(target.pins['avc_backport_commit'], upstream)
+        self.assertNotIn('avc_backport_commit', self.baseline.pins)
+        self.assertEqual(self.baseline.full_version, 'v4.2.1-aaaaaaaa@builtin')
+        with patch.object(policy, 'load_release_target', return_value=target):
+            policy.validate_target(target)
+            for changed in (None, 'f' * 40):
+                with self.assertRaisesRegex(ValueError, 'Backend recipe'):
+                    policy.validate_target(replace(target, avc_backport_commit=changed))
+        for invalid in ('abc', '', 1):
+            with self.assertRaisesRegex(ValueError, 'backport'):
+                policy._shape(replace(target, avc_backport_commit=invalid))
+
     def test_latest_entrypoint_actually_queries_latest(self):
         with self.environment() as calls:
             target = policy.resolve_latest_release()
