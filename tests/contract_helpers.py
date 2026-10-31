@@ -132,6 +132,18 @@ static void on_post_fs_data(void) {{ ++post_fs_calls; }}
 static void on_boot_completed(void) {{ ++boot_calls; }}
 static void on_module_mounted(void) {{ ++mounted_calls; }}
 static void susfs_start_sdcard_monitor_fn(void) {{ ++monitor_calls; }}
+/* v4.3.0 version-spoof hook (uapi/extension.h): mask bit0 overrides the
+ * working version, bit2 the reported UAPI; zero mask reports the build identity. */
+#define KSU_VERSION_SPOOF_WORKING_VERSION 1u
+#define KSU_VERSION_SPOOF_UAPI_VERSION 4u
+static __u32 spoof_mask, spoof_version, spoof_uapi_version;
+static void ksu_version_spoof_apply_info(struct ksu_get_info_cmd *cmd) {{
+    if (spoof_mask & KSU_VERSION_SPOOF_WORKING_VERSION) cmd->version = spoof_version;
+    if (spoof_mask & KSU_VERSION_SPOOF_UAPI_VERSION) cmd->uapi_version = spoof_uapi_version;
+}}
+static void ksu_version_spoof_apply_info_legacy(struct ksu_get_info_legacy_cmd *cmd) {{
+    if (spoof_mask & KSU_VERSION_SPOOF_WORKING_VERSION) cmd->version = spoof_version;
+}}
 {functions}
 {commands}
 struct file {{ int unused; }};
@@ -196,6 +208,12 @@ int main(void) {{
     CHECK(do_get_info(&info) == -EFAULT);
     CHECK(do_get_info_legacy(&legacy) == -EFAULT);
     fail_copy_to = false;
+    spoof_mask = KSU_VERSION_SPOOF_WORKING_VERSION | KSU_VERSION_SPOOF_UAPI_VERSION;
+    spoof_version = 41068; spoof_uapi_version = 5;
+    CHECK(do_get_info(&info) == 0 && info.version == 41068 && info.uapi_version == 5);
+    CHECK(do_get_info_legacy(&legacy) == 0 && legacy.version == 41068);
+    spoof_mask = 0;
+    CHECK(do_get_info(&info) == 0 && info.version == {kernel_version} && info.uapi_version == {uapi});
     permission_allowed = false;
     session_fd = true;
     for (size_t i = 0; ksu_ioctl_handlers[i].handler; ++i) {{

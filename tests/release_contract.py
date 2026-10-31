@@ -66,11 +66,20 @@ _Static_assert(KSU_LOOKUP_SYMBOLS_MAX == 1024, "release lookup limit");
 _Static_assert(sizeof(struct ksu_extension_cmd) == 32, "release extension size");
 _Static_assert(offsetof(struct ksu_extension_cmd, value) == 16 &&
                offsetof(struct ksu_extension_cmd, user_ptr) == 24, "release extension offsets");
-_Static_assert(KSU_EXTENSION_DYNAMIC_MANAGER == 3 && KSU_EXTENSION_MAX == 5,
+_Static_assert(KSU_EXTENSION_DYNAMIC_MANAGER == 3 && KSU_EXTENSION_VERSION_SPOOF == 5 &&
+               KSU_EXTENSION_MAX == 6,
                "release extension ids");
 _Static_assert(KSU_EXTENSION_GET == 1 && KSU_EXTENSION_SET == 2 &&
                KSU_EXTENSION_IO == 3 && KSU_EXTENSION_WIPE == 4 &&
+               KSU_EXTENSION_ABI == 5 && KSU_EXTENSION_ENUM == 6 &&
                KSU_EXTENSION_FLAG_FORCED == 128, "release extension operations");
+_Static_assert(KSU_EXTENSION_API_VERSION == 2u && KSU_EXTENSION_ABI_PROBE_ID == 0xFFFFFFFFu,
+               "release extension ABI probe");
+_Static_assert(KSU_EXTENSION_FLAG_STICKY == 2 && KSU_EXTENSION_FLAG_PERSIST == 4 &&
+               KSU_EXTENSION_FLAG_PER_UID == 8 && KSU_EXTENSION_FLAG_REBOOT == 16,
+               "release extension capability bits");
+_Static_assert(sizeof(struct ksu_extension_desc) == 48 &&
+               offsetof(struct ksu_extension_desc, name) == 16, "release extension descriptor");
 _Static_assert(sizeof(struct ksu_get_info_cmd) == 16, "release info size");
 _Static_assert(offsetof(struct ksu_get_info_cmd, uapi_version) == 12, "release UAPI offset");
 _Static_assert(sizeof(struct ksu_manager_entry) == 204, "release entry size");
@@ -222,9 +231,10 @@ int main(void) {
 '''
 
 
-def extension_harness(header, dispatch):
-    declaration = re.search(r"enum ksu_extension_id \{.*?\n\};", header, re.S).group()
-    declaration += '\n' + re.search(r"struct ksu_extension_cmd \{.*?\n\};", header, re.S).group()
+def extension_harness(header, extension_uapi, dispatch):
+    umount = re.search(r"struct ksu_add_try_umount_cmd \{.*?\n\};", header, re.S).group()
+    reply_caps = re.search(r"static u32 extension_reply_caps\s*\([^;]*?\)\s*\{.*?\n\}", dispatch, re.S).group()
+    extension_uapi = re.sub(r"^#include[^\n]*\n", "", extension_uapi, flags=re.M)
     function = base.c_function(dispatch, "do_extension")
     return r'''
 #include <stdint.h>
@@ -234,59 +244,111 @@ def extension_harness(header, dispatch):
 #include <errno.h>
 typedef uint32_t __u32;
 typedef uint64_t __u64;
+typedef uint8_t __u8;
+typedef uint64_t __aligned_u64;
 typedef uint32_t u32;
 typedef uint64_t u64;
 #define __user
-#define KSU_EXTENSION_GET 1
-#define KSU_EXTENSION_SET 2
-#define KSU_EXTENSION_IO 3
-#define KSU_EXTENSION_WIPE 4
 #define KSU_FEATURE_FLAG_SUPPORTED 1
-#define KSU_EXTENSION_FLAG_FORCED 128
-static bool read_fail, write_fail, supported = true, forced;
-static int error, calls_get, calls_set, calls_io, calls_wipe;
-static u32 seen_id;
+#define _IOC_NRBITS 8
+#define _IOC_TYPEBITS 8
+#define _IOC_SIZEBITS 14
+#define _IOC_DIRBITS 2
+#define _IOC_NONE 0U
+#define _IOC_WRITE 1U
+#define _IOC_READ 2U
+#define _IOC_NRSHIFT 0
+#define _IOC_TYPESHIFT (_IOC_NRSHIFT+_IOC_NRBITS)
+#define _IOC_SIZESHIFT (_IOC_TYPESHIFT+_IOC_TYPEBITS)
+#define _IOC_DIRSHIFT (_IOC_SIZESHIFT+_IOC_SIZEBITS)
+#define _IOC(dir,type,nr,size) (((dir) << _IOC_DIRSHIFT) | ((type) << _IOC_TYPESHIFT) | \
+                                ((nr) << _IOC_NRSHIFT) | ((size) << _IOC_SIZESHIFT))
+#define _IOC_TYPECHECK(t) (sizeof(t))
+#define _IO(type,nr) _IOC(_IOC_NONE,(type),(nr),0)
+#define _IOR(type,nr,size) _IOC(_IOC_READ,(type),(nr),(_IOC_TYPECHECK(size)))
+#define _IOW(type,nr,size) _IOC(_IOC_WRITE,(type),(nr),(_IOC_TYPECHECK(size)))
+#define _IOWR(type,nr,size) _IOC(_IOC_READ|_IOC_WRITE,(type),(nr),(_IOC_TYPECHECK(size)))
+''' + umount + '\n' + extension_uapi + r'''
+static bool read_fail, write_fail, forced;
+static int error, calls_get, calls_set, calls_io, calls_wipe, calls_enum;
+static u32 seen_id, seen_api, caps_reply = KSU_FEATURE_FLAG_SUPPORTED, enum_error;
 static void *seen_pointer;
 static u64 stored_value = 9;
+static struct ksu_extension_desc enum_desc;
 static int copy_from_user(void *to, const void *from, size_t size) {
     if (read_fail) return 1; memcpy(to, from, size); return 0;
 }
 static int copy_to_user(void *to, const void *from, size_t size) {
     if (write_fail) return 1; memcpy(to, from, size); return 0;
 }
-static int ksu_extension_ioctl(u32 id, void *arg) {
-    ++calls_io; seen_id = id; seen_pointer = arg; return error;
+static int ksu_extension_ioctl(u32 id, u32 api_version, void *raw) {
+    ++calls_io; seen_id = id; seen_api = api_version; seen_pointer = raw; return error;
 }
-static int ksu_extension_wipe(u32 id) { ++calls_wipe; seen_id = id; return error; }
-static int ksu_extension_set(u32 id, u64 value) {
-    ++calls_set; seen_id = id; if (!error) stored_value = value; return error;
+static int ksu_extension_wipe(u32 id, u32 api_version) {
+    ++calls_wipe; seen_id = id; seen_api = api_version; return error;
 }
-static int ksu_extension_get(u32 id, u64 *value, bool *out_supported) {
-    ++calls_get; seen_id = id; *value = stored_value; *out_supported = supported; return error;
+static int ksu_extension_set(u32 id, u32 api_version, u64 value) {
+    ++calls_set; seen_id = id; seen_api = api_version; if (!error) stored_value = value; return error;
+}
+static int ksu_extension_get(u32 id, u32 api_version, u64 *value, u32 *caps) {
+    ++calls_get; seen_id = id; seen_api = api_version; *value = stored_value; *caps = caps_reply; return error;
+}
+static int ksu_extension_enumerate(u32 index, struct ksu_extension_desc *desc) {
+    ++calls_enum; if (enum_error) return enum_error; *desc = enum_desc; return 0;
 }
 static bool ksu_extension_is_forced(u32 id) { seen_id = id; return forced; }
-''' + declaration + '\n' + function + r'''
+''' + '\n' + reply_caps + '\n' + function + r'''
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "extension CHECK line %d: %s\n", __LINE__, #x); return 1; } } while (0)
 int main(void) {
     struct ksu_extension_cmd cmd = {.id = KSU_EXTENSION_DYNAMIC_MANAGER, .op = KSU_EXTENSION_GET};
+    /* ABI probe: wrong id rejected; the real probe only reports the kernel ABI version */
+    cmd.op = KSU_EXTENSION_ABI; cmd.id = 0;
+    CHECK(do_extension(&cmd) == -EINVAL);
+    cmd.id = KSU_EXTENSION_ABI_PROBE_ID;
+    CHECK(do_extension(&cmd) == 0 && cmd.api_version == KSU_EXTENSION_API_VERSION &&
+          cmd.supported == 0 && cmd.value == 0);
+    /* ENUM: probe id, user pointer and the upper value word are validated */
+    cmd.op = KSU_EXTENSION_ENUM; cmd.id = 0;
+    CHECK(do_extension(&cmd) == -EINVAL);
+    cmd.id = KSU_EXTENSION_ABI_PROBE_ID;
+    CHECK(do_extension(&cmd) == -EINVAL);
+    cmd.user_ptr = (u64)(uintptr_t)&enum_desc; cmd.value = 1ULL << 32;
+    CHECK(do_extension(&cmd) == -EINVAL);
+    cmd.value = 0; enum_error = -ENOENT;
+    CHECK(do_extension(&cmd) == -ENOENT); enum_error = 0;
+    enum_desc.id = KSU_EXTENSION_VERSION_SPOOF; enum_desc.caps = 0; enum_desc.forced = 0;
+    CHECK(do_extension(&cmd) == 0 && cmd.id == KSU_EXTENSION_VERSION_SPOOF &&
+          cmd.api_version == KSU_EXTENSION_API_VERSION);
+    /* GET: bounds, supported/value/caps reply, forced bit added by the dispatcher */
+    cmd.id = KSU_EXTENSION_DYNAMIC_MANAGER; cmd.op = KSU_EXTENSION_GET;
     read_fail = true; CHECK(do_extension(&cmd) == -EFAULT && calls_get == 0); read_fail = false;
     cmd.id = KSU_EXTENSION_MAX; CHECK(do_extension(&cmd) == -EINVAL && calls_get == 0);
     cmd.id = KSU_EXTENSION_DYNAMIC_MANAGER;
-    CHECK(do_extension(&cmd) == 0 && seen_id == 3 && cmd.value == 9 && cmd.supported == 1);
-    forced = true; CHECK(do_extension(&cmd) == 0 && cmd.supported == 129); forced = false;
-    supported = false; CHECK(do_extension(&cmd) == -EOPNOTSUPP); supported = true;
+    CHECK(do_extension(&cmd) == 0 && seen_id == 3 && cmd.value == 9 && cmd.supported == KSU_FEATURE_FLAG_SUPPORTED);
+    caps_reply = KSU_FEATURE_FLAG_SUPPORTED | KSU_EXTENSION_FLAG_STICKY | KSU_EXTENSION_FLAG_PERSIST;
+    CHECK(do_extension(&cmd) == 0 && cmd.supported ==
+          (KSU_FEATURE_FLAG_SUPPORTED | KSU_EXTENSION_FLAG_STICKY | KSU_EXTENSION_FLAG_PERSIST));
+    caps_reply = 0; CHECK(do_extension(&cmd) == -EOPNOTSUPP);
+    caps_reply = KSU_FEATURE_FLAG_SUPPORTED;
+    forced = true; CHECK(do_extension(&cmd) == 0 &&
+          cmd.supported == (KSU_FEATURE_FLAG_SUPPORTED | KSU_EXTENSION_FLAG_FORCED)); forced = false;
     error = -EIO; CHECK(do_extension(&cmd) == -EIO); error = 0;
     write_fail = true; CHECK(do_extension(&cmd) == -EFAULT); write_fail = false;
+    /* SET: value written, then post-set state round-tripped to userspace */
     cmd.op = KSU_EXTENSION_SET; cmd.value = 42; forced = true;
-    CHECK(do_extension(&cmd) == 0 && calls_set == 1 && cmd.value == 42 && cmd.supported == 129);
+    CHECK(do_extension(&cmd) == 0 && calls_set == 1 && cmd.value == 42 && cmd.supported ==
+          (KSU_FEATURE_FLAG_SUPPORTED | KSU_EXTENSION_FLAG_FORCED));
     error = -EPERM; CHECK(do_extension(&cmd) == -EPERM && calls_set == 2); error = 0;
     write_fail = true; CHECK(do_extension(&cmd) == -EFAULT && stored_value == 42); write_fail = false;
-    cmd.op = KSU_EXTENSION_IO; cmd.user_ptr = 0x1234;
-    CHECK(do_extension(&cmd) == 0 && calls_io == 1 && seen_pointer == (void *)(uintptr_t)0x1234);
+    forced = false;
+    /* IO and WIPE forward the raw user pointer and caller API version verbatim */
+    cmd.op = KSU_EXTENSION_IO; cmd.user_ptr = 0x1234; cmd.api_version = 7;
+    CHECK(do_extension(&cmd) == 0 && calls_io == 1 && seen_pointer == (void *)(uintptr_t)0x1234 && seen_api == 7);
     error = -EIO; CHECK(do_extension(&cmd) == -EIO && calls_io == 2); error = 0;
-    cmd.op = KSU_EXTENSION_WIPE; CHECK(do_extension(&cmd) == 0 && calls_wipe == 1);
+    cmd.op = KSU_EXTENSION_WIPE;
+    CHECK(do_extension(&cmd) == 0 && calls_wipe == 1 && seen_api == 7);
     error = -EPERM; CHECK(do_extension(&cmd) == -EPERM && calls_wipe == 2);
-    puts("actual extension300: manager routing, GET/SET state/forced flags, IO pointers, WIPE and faults pass");
+    puts("actual extension300: ABI/ENUM probes, GET caps/forced reply, SET round-trip, IO/WIPE api_version and faults pass");
     return 0;
 }
 '''
@@ -384,7 +446,7 @@ def main():
         base.compile_and_run_host(manager_harness(source), directory, "real_manager_dispatch", True)
         base.compile_and_run_host(lookup_harness(header, dispatch), directory, "real_lookup", True)
         extension = (source / "kernel/include/uapi/extension.h").read_text()
-        base.compile_and_run_host(extension_harness(extension, dispatch), directory, "real_extension", True)
+        base.compile_and_run_host(extension_harness(header, extension, dispatch), directory, "real_extension", True)
         # A controlled UAPI5 rollback must fail even when all other declarations
         # are current; it must not fail merely because an old git object is absent.
         old, changed = re.subn(r"DECLARE\(__u32,\s*KERNEL_SU_UAPI_VERSION,\s*6\);",
@@ -412,7 +474,7 @@ def main():
         wrong_pointer = dispatch.replace("(void __user *)(uintptr_t)cmd.user_ptr", "NULL", 1)
         if wrong_pointer == dispatch:
             raise AssertionError("extension user pointer forwarding missing")
-        base.compile_and_run_host(extension_harness(extension, wrong_pointer), directory, "wrong_extension_pointer", False)
+        base.compile_and_run_host(extension_harness(header, extension, wrong_pointer), directory, "wrong_extension_pointer", False)
     print("Release real C contract passed; runtime boot/root remain untested")
 
 if __name__ == "__main__":

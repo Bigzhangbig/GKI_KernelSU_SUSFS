@@ -283,8 +283,9 @@ def force_unity_harness(source, feature_override=None):
         return re.sub(r"^#include[^\n]*\n", "", text, flags=re.M)
     headers = without_includes((source / "kernel/policy/feature.h").read_text())
     headers += without_includes((source / "kernel/extension/extension.h").read_text())
-    enum = re.search(r"enum ksu_extension_id \{.*?\n\};",
-                     (source / "kernel/include/uapi/extension.h").read_text(), re.S).group()
+    umount = re.search(r"struct ksu_add_try_umount_cmd \{.*?\n\};",
+                       (source / "kernel/include/uapi/supercall.h").read_text(), re.S).group()
+    extension_uapi = without_includes((source / "kernel/include/uapi/extension.h").read_text())
     return r'''
 #include <stdbool.h>
 #include <stdint.h>
@@ -293,14 +294,45 @@ def force_unity_harness(source, feature_override=None):
 #include <string.h>
 #include <errno.h>
 #include <limits.h>
+#include <sys/types.h>
 typedef uint32_t u32;
 typedef uint64_t u64;
+typedef uint8_t __u8;
+typedef uint32_t __u32;
+typedef uint64_t __u64;
+typedef uint64_t __aligned_u64;
 #define __init
 #define __exit
 #define __user
 #define __read_mostly
 #define KERNEL_VERSION(a,b,c) (((a)<<16)|((b)<<8)|(c))
 #define LINUX_VERSION_CODE KERNEL_VERSION(5,10,209)
+#define _IOC_NRBITS 8
+#define _IOC_TYPEBITS 8
+#define _IOC_SIZEBITS 14
+#define _IOC_DIRBITS 2
+#define _IOC_NONE 0U
+#define _IOC_WRITE 1U
+#define _IOC_READ 2U
+#define _IOC_NRSHIFT 0
+#define _IOC_TYPESHIFT (_IOC_NRSHIFT+_IOC_NRBITS)
+#define _IOC_SIZESHIFT (_IOC_TYPESHIFT+_IOC_TYPEBITS)
+#define _IOC_DIRSHIFT (_IOC_SIZESHIFT+_IOC_SIZEBITS)
+#define _IOC(dir,type,nr,size) (((dir) << _IOC_DIRSHIFT) | ((type) << _IOC_TYPESHIFT) | \
+                                ((nr) << _IOC_NRSHIFT) | ((size) << _IOC_SIZESHIFT))
+#define _IOC_TYPECHECK(t) (sizeof(t))
+#define _IO(type,nr) _IOC(_IOC_NONE,(type),(nr),0)
+#define _IOR(type,nr,size) _IOC(_IOC_READ,(type),(nr),(_IOC_TYPECHECK(size)))
+#define _IOW(type,nr,size) _IOC(_IOC_WRITE,(type),(nr),(_IOC_TYPECHECK(size)))
+#define _IOWR(type,nr,size) _IOC(_IOC_READ|_IOC_WRITE,(type),(nr),(_IOC_TYPECHECK(size)))
+#define KSU_FEATURE_FLAG_SUPPORTED 1
+static ssize_t strscpy(char *dest, const char *src, size_t count) {
+    size_t len = 0;
+    if (!count) return -E2BIG;
+    while (len + 1 < count && src[len]) { dest[len] = src[len]; ++len; }
+    dest[len] = '\0';
+    return src[len] ? (ssize_t)-E2BIG : (ssize_t)len;
+}
 #define pr_info(...) ((void)0)
 #define pr_err(...) ((void)0)
 #define pr_warn(...) ((void)0)
@@ -335,7 +367,7 @@ static int kstrtou32(const char *s,unsigned base,u32 *out) {
     if (ret || value>UINT32_MAX) return -EINVAL;
     *out=(u32)value; return 0;
 }
-''' + (source / "kernel/include/uapi/feature.h").read_text() + '\n' + enum + '\n' + headers + r'''
+''' + (source / "kernel/include/uapi/feature.h").read_text() + '\n' + umount + '\n' + extension_uapi + '\n' + headers + r'''
 static u64 low_feature_value, avc_feature_value, extension_value;
 static int low_feature_calls, avc_feature_calls, extension_calls;
 static bool fail_feature, fail_extension;
@@ -350,17 +382,19 @@ static void extension_force_stub(u32 id,u64 value) { (void)id;(void)value; }
 static int extension_wipe_stub(u32 id) { (void)id;return 0; }
 static const struct ksu_extension_handler_ops ksu_extension_kpm_ops={extension_get_stub,extension_set_stub};
 static const struct ksu_extension_handler_ops ksu_extension_dynamic_manager_ops={extension_get_stub,extension_set_stub};
-static const struct ksu_extension_handler_ops ksu_extension_susfs_ops={extension_get_stub,extension_set_stub};
+static const struct ksu_extension_handler_ops ksu_extension_susfs_ops={extension_get_stub,NULL};
 #define ksu_extension_kpm_io extension_io_stub
 #define ksu_extension_kpm_apply_forced extension_force_stub
 #define ksu_extension_cpu_spoof_io extension_io_stub
 #define ksu_extension_umount_paths_io extension_io_stub
 #define ksu_extension_umount_paths_wipe extension_wipe_stub
 #define ksu_extension_dynamic_manager_io extension_io_stub
+#define ksu_extension_version_spoof_io extension_io_stub
+#define ksu_extension_version_spoof_wipe extension_wipe_stub
 ''' + without_includes(extension) + '\n' + without_includes(feature) + r'''
 _Static_assert(sizeof(unsigned long)==8,"target and host must use 64-bit bitmap words");
 _Static_assert(sizeof(FEATURE_MASK)==157*sizeof(unsigned long),"feature bitmap must cover AVC10003");
-_Static_assert(sizeof(forced_mask)==sizeof(unsigned long),"extension bitmap stays at five IDs");
+_Static_assert(sizeof(forced_mask)==sizeof(unsigned long),"extension bitmap stays at six IDs");
 #define CHECK(x) do { if(!(x)){fprintf(stderr,"force unity CHECK line %d: %s\n",__LINE__,#x);return 1;} } while(0)
 int main(int argc,char **argv) {
     const char *scenario=argc>1?argv[1]:"normal";
@@ -374,7 +408,7 @@ int main(int argc,char **argv) {
         CHECK(force_feature_param_set("3:101",NULL)==0);
         CHECK(ksu_feature_is_forced(3) && !ksu_extension_is_forced(3));
         CHECK(test_bit(3,FEATURE_PENDING) && !test_bit(3,forced_pending));
-        CHECK(ksu_extension_set(3,202)==0 && ksu_set_feature(3,404)==-EPERM);
+        CHECK(ksu_extension_set(3,KSU_EXTENSION_API_VERSION,202)==0 && ksu_set_feature(3,404)==-EPERM);
         ksu_feature_apply_forced();
         CHECK(low_feature_value==101 && !test_bit(3,FEATURE_PENDING) && extension_value==202);
         ksu_extension_apply_forced();CHECK(low_feature_calls==1 && extension_calls==1);
@@ -384,7 +418,7 @@ int main(int argc,char **argv) {
         CHECK(force_extension_param_set("3:202",NULL)==0);
         CHECK(ksu_extension_is_forced(3) && !ksu_feature_is_forced(3));
         CHECK(test_bit(3,forced_pending) && !test_bit(3,FEATURE_PENDING));
-        CHECK(ksu_set_feature(3,101)==0 && ksu_extension_set(3,404)==-EPERM);
+        CHECK(ksu_set_feature(3,101)==0 && ksu_extension_set(3,KSU_EXTENSION_API_VERSION,404)==-EPERM);
         ksu_extension_apply_forced();
         CHECK(extension_value==202 && !test_bit(3,forced_pending) && low_feature_value==101);
         ksu_feature_apply_forced();CHECK(low_feature_calls==1 && extension_calls==1);
@@ -396,7 +430,7 @@ int main(int argc,char **argv) {
     CHECK(force_extension_param_set("dynamic_manager:222",NULL)==0);
     CHECK(ksu_extension_is_forced(3) && !ksu_feature_is_forced(3));
     CHECK(ksu_set_feature(3,999)==0 && low_feature_value==999);
-    CHECK(ksu_set_feature(10003,999)==-EPERM && ksu_extension_set(3,999)==-EPERM);
+    CHECK(ksu_set_feature(10003,999)==-EPERM && ksu_extension_set(3,KSU_EXTENSION_API_VERSION,999)==-EPERM);
     CHECK(force_feature_param_set("3:333",NULL)==0);
     ksu_feature_apply_forced();
     CHECK(avc_feature_value==111 && low_feature_value==333 && extension_calls==0);
@@ -416,9 +450,10 @@ int main(int argc,char **argv) {
     CHECK(test_bit(3,forced_pending) && extension_value==444);
     ksu_feature_apply_forced();CHECK(test_bit(3,forced_pending));
     fail_extension=false;ksu_extension_apply_forced();CHECK(!test_bit(3,forced_pending) && extension_value==777);
-    u64 value=0;bool supported=false;
+    u64 value=0;bool supported=false;u32 caps=0;
     CHECK(ksu_get_feature(10003,&value,&supported)==0 && supported && value==666);
-    CHECK(ksu_extension_get(3,&value,&supported)==0 && supported && value==777);
+    CHECK(ksu_extension_get(3,KSU_EXTENSION_API_VERSION,&value,&caps)==0 &&
+          (caps&KSU_FEATURE_FLAG_SUPPORTED) && (caps&KSU_EXTENSION_FLAG_STICKY) && value==777);
     puts("actual feature+extension unity: 157/1-word declarations, AVC10003/shared-low3 force masks and replay queues isolated");
     return 0;
 }
