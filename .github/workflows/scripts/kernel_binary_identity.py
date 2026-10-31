@@ -2,8 +2,13 @@
 
 This is deliberately a small decoder, not a general disassembler or kernel
 emulator. It follows constants and stack writes up to the 16-byte copy ABI,
-joining both sides of conditional branches to a fixed point. Unrecognized
-instructions fail; BRK is a terminal trap and cannot count as a proven copy.
+joining both sides of conditional branches to a fixed point. A path ends only
+at a 16-byte copy, a BRK trap, a RET, or when it leaves the handler; copies
+are proven on the joined state of every arrival. Stack bytes that differ
+across paths merge into an explicit alternative set: the v4.3.0 version-spoof
+hook may replace version/uapi with a runtime value, so those fields accept
+exactly {expected, runtime} merges while features must stay a proven
+constant. Unrecognized instructions fail; BRK/RET cannot count as a copy.
 """
 from dataclasses import dataclass
 import hashlib
@@ -35,6 +40,19 @@ def _plus(value, delta):
     if isinstance(value, _Stack):
         return _Stack(value.offset + delta)
     return (value + delta) & _MASK64 if isinstance(value, int) else None
+
+
+def _join_values(left, right):
+    """Merge two stack bytes; differing values become an explicit alternative set."""
+    if left == right:
+        return left
+    alternatives = set()
+    for value in (left, right):
+        if isinstance(value, frozenset):
+            alternatives |= set(value)
+        else:
+            alternatives.add(value)
+    return frozenset(alternatives)
 
 
 class _State:
@@ -82,7 +100,7 @@ class _State:
         for location in self.stack.keys() | other.stack.keys():
             left, left_src = self.stack.get(location, (None, ()))
             right, right_src = other.stack.get(location, (None, ()))
-            result.stack[location] = (left if left == right else None,
+            result.stack[location] = (_join_values(left, right),
                                       tuple(sorted(set(left_src + right_src))))
         return result
 
@@ -159,30 +177,53 @@ def verify_get_info_identity(image: bytes, function: dict, metadata: dict,
     def check_record(state, pc, target):
         start = state.read(1).offset
         parts = [state.stack.get(start + i, (None, ())) for i in range(16)]
-        fields = []
-        for i, name in ((0, "version"), (8, "features"), (12, "uapi_version")):
-            _require(all(byte is not None for byte, _ in parts[i:i + 4]),
-                     f"GET_INFO {name} is not a proven constant in the copied record")
-            fields.append(int.from_bytes(bytes(byte for byte, _ in parts[i:i + 4]), "little"))
-        actual_version, actual_features, actual_uapi = fields
-        _require(actual_version == expected_version,
-                 f"GET_INFO version mismatch: {actual_version} != {expected_version}")
-        _require(actual_uapi == expected_uapi,
-                 f"GET_INFO uapi_version mismatch: {actual_uapi} != {expected_uapi}")
-        _require(actual_features == expected_features,
-                 f"GET_INFO features mismatch: {actual_features} != {expected_features}")
-        _require(all(origins for _, origins in parts[:4]), "GET_INFO version initialization lacks provenance")
+        overridable = []
+        for i, name, expected, strict in ((0, "version", expected_version, False),
+                                          (8, "features", expected_features, True),
+                                          (12, "uapi_version", expected_uapi, False)):
+            field = parts[i:i + 4]
+            expected_bytes = expected.to_bytes(4, "little")
+            values = [value for value, _ in field]
+            if all(isinstance(value, int) for value in values):
+                actual = int.from_bytes(bytes(values), "little")
+                _require(actual == expected,
+                         f"GET_INFO {name} mismatch: {actual} != {expected}")
+            else:
+                unproven = False
+                for index, value in enumerate(values):
+                    if value is None:
+                        unproven = True  # no path proves this byte at all
+                    elif isinstance(value, frozenset):
+                        known = set(value) - {None}
+                        _require(known <= {expected_bytes[index]},
+                                 f"GET_INFO {name} mismatch in the copied record")
+                    else:
+                        _require(value == expected_bytes[index],
+                                 f"GET_INFO {name} mismatch in the copied record")
+                # v4.3.0 version-spoof override: bytes merge to exactly
+                # {expected, runtime}. A byte with no proven constant on any
+                # path stays unproven, and features must stay a proven
+                # constant because the spoof hook never touches it.
+                _require(not unproven and not strict,
+                         f"GET_INFO {name} is not a proven constant in the copied record")
+                overridable.append(name)
+            _require(all(origins for _, origins in field),
+                     f"GET_INFO {name} initialization lacks provenance")
         _require(target in copy_addresses, "GET_INFO copy call target mismatch")
         flags = parts[4:8]
         records.append({
             "copy_call_image_offset": hex(offset + pc), "copy_call_target": hex(target),
-            "stack_offset": start, "bytes_hex": "".join(f"{b:02x}" if b is not None else "??" for b, _ in parts),
-            "flags": int.from_bytes(bytes(b for b, _ in flags), "little") if all(b is not None for b, _ in flags) else None,
+            "stack_offset": start,
+            "bytes_hex": "".join(f"{b:02x}" if isinstance(b, int) else "??" for b, _ in parts),
+            "flags": int.from_bytes(bytes(b for b, _ in flags), "little")
+            if all(isinstance(b, int) for b, _ in flags) else None,
             "byte_origins": [[{"kind": kind, "image_offset": hex(where), "size": length}
                               for kind, where, length in origins] for _, origins in parts],
         })
+        return overridable
 
     pending = [(0, _State(), 0)]
+    sites = {}
     explored = 0
     states = {}
     traps = set()
@@ -192,7 +233,12 @@ def verify_get_info_identity(image: bytes, function: dict, metadata: dict,
             explored += 1
             steps += 1
             _require(explored <= 4096 and steps <= 512, "unsupported GET_INFO loop/path complexity")
-            _require(pc % 4 == 0 and 0 <= pc < size, "unsupported GET_INFO branch outside handler before copy")
+            _require(pc % 4 == 0, "unaligned GET_INFO branch")
+            if not 0 <= pc < size:
+                # The path left the handler (e.g. after __stack_chk_fail):
+                # terminal, and it cannot count as a proven copy.
+                traps.add(offset + pc)
+                break
             prior = states.get(pc)
             if prior is not None:
                 state = prior.join(state)
@@ -306,7 +352,9 @@ def verify_get_info_identity(image: bytes, function: dict, metadata: dict,
                 if word & (1 << 31):
                     target = (address + target_pc) & _MASK64
                     if isinstance(state.read(1), _Stack) and state.read(2) == 16:
-                        check_record(state, pc, target)
+                        entry = sites.setdefault(pc, (target, []))
+                        _require(entry[0] == target, "GET_INFO copy call target differs between paths")
+                        entry[1].append(state.clone())
                         break
                     _require(not any(isinstance(state.read(reg), _Stack) for reg in range(8)),
                              "unsupported external call receives GET_INFO stack frame before proven copy")
@@ -321,6 +369,9 @@ def verify_get_info_identity(image: bytes, function: dict, metadata: dict,
                     state.vector_origins = [()] * 32
                 else:
                     next_pc = target_pc
+            elif word == 0xd65f03c0:  # RET: the path ends without a proven copy
+                traps.add(offset + pc)
+                break
             elif word & 0xff000010 == 0x54000000:  # B.cond
                 target_pc = pc + _signed((word >> 5) & 0x7ffff, 19) * 4
                 pending.append((target_pc, state.clone(), steps))
@@ -340,7 +391,14 @@ def verify_get_info_identity(image: bytes, function: dict, metadata: dict,
             else:
                 raise ValueError(f"unsupported GET_INFO instruction {word:08x} at Image {hex(offset + pc)}")
             pc = next_pc
-    _require(records, "GET_INFO has no proven 16-byte record copy")
+    _require(sites, "GET_INFO has no proven 16-byte record copy")
+    overridable_fields = []
+    for site_pc in sorted(sites):
+        target, arrivals = sites[site_pc]
+        merged = arrivals[0]
+        for arrival in arrivals[1:]:
+            merged = merged.join(arrival)
+        overridable_fields.extend(check_record(merged, site_pc, target))
     full = expected_full_version.encode("ascii") + b"\0"
     full_offset = image.find(full)
     _require(full_offset >= 0, f"pinned full version string absent: {expected_full_version}")
@@ -350,5 +408,9 @@ def verify_get_info_identity(image: bytes, function: dict, metadata: dict,
             "rodata_reads": list(reads.values()), "records": records,
             "copy_to_user_addresses": [hex(candidate) for candidate in sorted(copy_addresses)],
             "trap_terminal_image_offsets": [hex(where) for where in sorted(traps)],
+            "runtime_overridable_identity_fields": sorted(set(overridable_fields)),
             "full_version": {"value": expected_full_version, "image_offset": hex(full_offset), "bytes_hex": full.hex()},
-            "method": "AArch64 constant/stack fixed-point data-flow to 16-byte copy ABI; all reachable copy records checked"}
+            "method": "AArch64 constant/stack fixed-point data-flow to the 16-byte copy ABI; copies proven on "
+                      "the join of every arrival; version/uapi accept exactly the {build-constant, version-spoof "
+                      "runtime value} merge while features must remain a proven constant; BRK/RET/out-of-handler "
+                      "paths terminate without a record"}
