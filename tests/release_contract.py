@@ -382,7 +382,7 @@ def common_contract(source, common):
         r"if \(likely\(READ_ONCE\(ksu_su_compat_enabled\)\)\)",
         r"is_su_session = !ksu_handle_execveat\(&fd, &filename, &argv, &envp, &flags\);",
         r"is_su_session = !ksu_handle_execveat_sucompat\(&fd, &filename, &argv, &envp, &flags\);",
-        r"retval = bprm_execve\(bprm, fd, filename, flags\);\s*#ifdef CONFIG_KSU_SUSFS\s*if \(unlikely\(is_su_session\)\)\s*\(void\)ksu_handle_post_execveat_sucompat\(&fd, &filename, &argv, &envp, &flags, &retval\);"])
+        r"retval = bprm_execve\(bprm, fd, filename, flags\);\s*#ifdef CONFIG_KSU_SUSFS\s*if \(unlikely\(is_su_session\)\)\s*\{?\s*\(void\)ksu_handle_post_execveat_sucompat\(&fd, &filename, &argv, &envp, &flags, &retval\);\s*\}?"])
     for relative in ("fs/exec.c", "fs/open.c", "fs/stat.c"):
         hooks = require_text(common / relative, [r"extern bool ksu_su_compat_enabled;",
                                                 r"if \(likely\(READ_ONCE\(ksu_su_compat_enabled\)\)\)"])

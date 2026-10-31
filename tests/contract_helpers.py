@@ -307,7 +307,7 @@ def common_hook_harness(source: Path, common: Path, exec_override: str | None = 
     exec_hook = prehook(exec_source)
     access_hook = prehook((common / "fs/open.c").read_text())
     stat_hook = prehook((common / "fs/stat.c").read_text())
-    post_hook = re.search(r"if \(unlikely\(is_su_session\)\)\s*\(void\)ksu_handle_post_execveat_sucompat\([^;]+;",
+    post_hook = re.search(r"if \(unlikely\(is_su_session\)\)\s*\{?\s*\(void\)ksu_handle_post_execveat_sucompat\([^;]+;\s*\}?",
                           exec_source).group()
     read_hook = re.search(r"if \(static_branch_unlikely\(&ksu_is_init_rc_hook_enabled\)\)\s*\(void\)ksu_handle_sys_read\([^;]+;",
                           (common / "fs/read_write.c").read_text()).group()
@@ -322,6 +322,7 @@ def common_hook_harness(source: Path, common: Path, exec_override: str | None = 
 #define __user
 #define CONFIG_KSU_SUSFS 1
 #define KSU_COMPAT_USE_STATIC_KEY 1
+#define KSU_NO_PREINIT 1
 #define likely(x) (x)
 #define unlikely(x) (x)
 #define READ_ONCE(x) (x)

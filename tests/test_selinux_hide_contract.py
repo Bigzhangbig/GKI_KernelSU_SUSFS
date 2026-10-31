@@ -12,7 +12,7 @@ import subprocess
 import tempfile
 
 
-WRAPPERS = ("susfs_setprocattr", "susfs_write_context", "susfs_write_access")
+WRAPPERS = ("handle_selinux_setprocattr", "handle_sel_write_context", "handle_sel_write_access")
 
 
 def function(source, name):
@@ -46,12 +46,12 @@ def check_declarations(builtin, hooks, filesystem):
             raise AssertionError("common prototype must match builtin: " + name)
         if re.search(r"\bstatic\s+" + signature, common):
             raise AssertionError("common must delegate instead of shadowing builtin: " + name)
-    if not re.search(r"#ifdef CONFIG_KSU_SUSFS\s*LSM_HOOK_INIT\(setprocattr, susfs_setprocattr\),\s*"
+    if not re.search(r"#ifdef CONFIG_KSU_SUSFS\s*LSM_HOOK_INIT\(setprocattr, handle_selinux_setprocattr\),\s*"
                      r"#else\s*LSM_HOOK_INIT\(setprocattr, selinux_setprocattr\)", hooks):
         raise AssertionError("LSM setprocattr must register the gated wrapper and original fallback")
     for operation in ("ACCESS", "CONTEXT"):
         suffix = operation.lower()
-        if not re.search(r"#ifdef CONFIG_KSU_SUSFS\s*\[SEL_" + operation + r"\]\s*=\s*susfs_write_" + suffix
+        if not re.search(r"#ifdef CONFIG_KSU_SUSFS\s*\[SEL_" + operation + r"\]\s*=\s*handle_sel_write_" + suffix
                          + r",\s*#else\s*\[SEL_" + operation + r"\]\s*=\s*sel_write_" + suffix, filesystem):
             raise AssertionError("SEL_" + operation + " must register the gated wrapper and original fallback")
 
@@ -117,9 +117,9 @@ int main(void) {
         set_result = results[r]; write_result = results[r];
         bool write_delegate = uids[u] >= 10000 && running;
         bool set_delegate = write_delegate && n == 0;
-        CHECK(susfs_setprocattr(names[n], value, sizes[z]) == results[r]);
-        CHECK(susfs_write_context(&file, value, sizes[z]) == results[r]);
-        CHECK(susfs_write_access(&file, value, sizes[z]) == results[r]);
+        CHECK(handle_selinux_setprocattr(names[n], value, sizes[z]) == results[r]);
+        CHECK(handle_sel_write_context(&file, value, sizes[z]) == results[r]);
+        CHECK(handle_sel_write_access(&file, value, sizes[z]) == results[r]);
         CHECK(delegated[0] == set_delegate && fallback[0] == !set_delegate);
         CHECK(delegated[1] == write_delegate && fallback[1] == !write_delegate);
         CHECK(delegated[2] == write_delegate && fallback[2] == !write_delegate);
@@ -158,9 +158,9 @@ def check_sources(source, common):
         directory = Path(tmp)
         run_harness(wrappers, directory, "actual_selinux_routing")
         for label, old, new in (
-            ("wrong_running_gate", "!ksu_selinux_hide_running", "false"),
-            ("wrong_uid_boundary", "< 10000", "< 9999"),
-            ("wrong_current_gate", 'strcmp(name, "current")', "false"),
+            ("wrong_running_gate", "ksu_selinux_hide_running", "false"),
+            ("wrong_uid_boundary", ">= 10000", ">= 9999"),
+            ("wrong_current_gate", '!strcmp(name, "current")', "false"),
             ("wrong_delegate_size", "my_write_access(file, buf, size)", "my_write_access(file, buf, size + 1)"),
             ("wrong_delegate_return", "return my_setprocattr(name, value, size);", "(void)my_setprocattr(name, value, size); return 0;"),
         ):
