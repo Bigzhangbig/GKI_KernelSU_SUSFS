@@ -396,6 +396,8 @@ def common_contract(source, common):
     if re.search(r"void ksu_handle_sys_read|ksu_handle_sys_read\(fd\);", reads):
         raise AssertionError("read hook must match the builtin three-argument ABI")
     require_text(common / "include/linux/susfs.h", [r'#define\s+SUSFS_VERSION\s+"v' + re.escape(TARGET.susfs_version) + r'"'])
+    require_text(common / "fs/Makefile", [
+        r"(?m)^ccflags-y \+= -DKSU_NO_PREINIT$"])
     major, minor = TARGET.kernel_tuple[1].split(".")
     require_text(common / "Makefile", [rf"(?m)^VERSION = {major}$",
         rf"(?m)^PATCHLEVEL = {minor}$", rf"(?m)^SUBLEVEL = {TARGET.kernel_tuple[2]}$"])

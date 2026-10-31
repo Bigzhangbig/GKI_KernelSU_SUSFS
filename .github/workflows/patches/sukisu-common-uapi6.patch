@@ -85,3 +85,18 @@ index 911b6ce..7cc0b91 100644
  		if (unlikely(__ksu_is_allow_uid_for_current(current_uid().val)))
  			ksu_handle_stat(&dfd, &fname, &flags);
  	}
+diff --git a/fs/Makefile b/fs/Makefile
+index e951f54..2289e86 100644
+--- a/fs/Makefile
++++ b/fs/Makefile
+@@ -6,6 +6,10 @@
+ # Rewritten to use lists instead of if-statements.
+ # 
+ 
++# The pinned SukiSU builtin runs without the preinit runner; keep the
++# SuSFS exec.c preinit branches compiled out.
++ccflags-y += -DKSU_NO_PREINIT
++
+ subdir-ccflags-y += -DANDROID_GKI_VFS_EXPORT_ONLY=VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver
+ 
+ obj-y :=	open.o read_write.o file_table.o super.o \
