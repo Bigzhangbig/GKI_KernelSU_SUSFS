@@ -51,6 +51,12 @@ class ReleaseTarget:
     apk_sha256: str
     manager_certificate_sha256: str
     avc_backport_commit: str | None = None
+    # Stock rubens banner alignment (see stock_boot_banner notes in the audit docs):
+    # appended after EXTRAVERSION so KERNELRELEASE equals the official MIUI release,
+    # and baked into mkcompile_h UTS_VERSION. LOCALVERSION_AUTO must be disabled
+    # (configure_kernel appends CONFIG_LOCALVERSION_AUTO=n) or the git hash leaks in.
+    stock_kernel_release_suffix: str = "-android12-9-00019-g4ea09a298bb4-ab12292661"
+    stock_kernel_build_stamp: str = "Wed Aug 28 22:16:09 UTC 2024"
 
     @property
     def name(self):

@@ -442,6 +442,9 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
             f.write(self.KERNEL_CONFIG_TEMPLATE)
             f.write("CONFIG_KPM=n\nCONFIG_KSU_DEBUG=n\n")
             f.write("CONFIG_KSU_SUSFS_SUS_PATH=y\n")
+            # Release alignment: drop the git -g<hash> suffix so the env
+            # LOCALVERSION (stock rubens suffix) fully controls KERNELRELEASE.
+            f.write("CONFIG_LOCALVERSION_AUTO=n\n")
 
         build_config = self.work_dir / "common/build.config.gki"
         if build_config.exists():
@@ -533,14 +536,15 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
             content = setlocalversion.read_text().replace("-dirty", "")
             setlocalversion.write_text(content)
 
-        import datetime
-        current_time = datetime.datetime.utcnow().strftime("%a %b %d %H:%M:%S UTC %Y")
+        # Kernel release alignment: bake the stock rubens banner pieces so
+        # /proc/version matches the official MIUI kernel byte-for-byte
+        # (uname spoof alone contradicts /proc/version and trips risk SDKs).
         mkcompile_h = self.work_dir / "common/scripts/mkcompile_h"
         if mkcompile_h.exists():
             with open(mkcompile_h, "r") as f:
                 content = f.read()
             content = content.replace('UTS_VERSION="$(echo $UTS_VERSION $CONFIG_FLAGS $TIMESTAMP | cut -b -$UTS_LEN)"',
-                                    f'UTS_VERSION="#1 SMP PREEMPT {current_time}"')
+                                    f'UTS_VERSION="#1 SMP PREEMPT {self.config.target.stock_kernel_build_stamp}"')
             with open(mkcompile_h, "w") as f:
                 f.write(content)
 
@@ -597,7 +601,10 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
         try:
             if (self.work_dir / "build/build.sh").exists():
                 logger.info("使用旧版构建方式...")
-                result = self._run_cmd("LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh CC=\"/usr/bin/ccache clang\"", check=True)
+                result = self._run_cmd(
+                    f"LOCALVERSION=\"{self.config.target.stock_kernel_release_suffix}\" "
+                    "LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh CC=\"/usr/bin/ccache clang\"",
+                    check=True)
             else:
                 raise RuntimeError("Verified GKI build/build.sh is missing")
 
