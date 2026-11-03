@@ -24,7 +24,8 @@ class ArtifactChecksTests(unittest.TestCase):
         self.target = replace(load_release_target(), manager_certificate_sha256="a" * 64,
                               susfs_version="9.8.7", kernel_tuple=("android99", "6.1", "23", "2099-01"))
         enabled = ("KPROBES", "KSU", "KSU_SUSFS", "KSU_SUSFS_SUS_PATH", "KSU_SUSFS_SUS_MOUNT",
-                   "KSU_SUSFS_SUS_MAP", "KSU_SUSFS_SPOOF_UNAME", "KSU_SUSFS_OPEN_REDIRECT")
+                   "KSU_SUSFS_SUS_MAP", "KSU_SUSFS_SPOOF_UNAME", "KSU_SUSFS_OPEN_REDIRECT",
+                   "KSU_SUSFS_PRIORITY_UID_FILTER")
         self.config = "".join(f"CONFIG_{name}=y\n" for name in enabled)
         self.config += "# CONFIG_KPM is not set\n# CONFIG_KSU_DEBUG is not set\n"
         (self.folder / "kernel.config").write_text(self.config)

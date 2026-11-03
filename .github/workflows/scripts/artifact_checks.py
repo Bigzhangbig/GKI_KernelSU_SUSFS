@@ -96,7 +96,8 @@ def check_archive(source: Path, target) -> tuple[bytes, dict]:
     lines = set(config.splitlines())
     for key in ("CONFIG_KSU", "CONFIG_KSU_SUSFS", "CONFIG_KSU_SUSFS_SUS_PATH",
                 "CONFIG_KSU_SUSFS_SUS_MOUNT", "CONFIG_KSU_SUSFS_SUS_MAP",
-                "CONFIG_KSU_SUSFS_SPOOF_UNAME", "CONFIG_KSU_SUSFS_OPEN_REDIRECT"):
+                "CONFIG_KSU_SUSFS_SPOOF_UNAME", "CONFIG_KSU_SUSFS_OPEN_REDIRECT",
+                "CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER"):
         require(f"{key}=y" in lines, f"{key} is not enabled")
     for key in ("CONFIG_KPM", "CONFIG_KSU_DEBUG"):
         require(f"# {key} is not set" in lines, f"{key} is enabled or missing")
