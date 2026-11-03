@@ -5,7 +5,7 @@
   "uapi": 6,
   "features": 10004,
   "kernelsu_commit": "b16e899a555e9b96aa1225f049cd7274820ca5b8",
-  "susfs_commit": "8930474a298d07ab9f1beca926779cbc3656b79e",
+  "susfs_commit": "b0e474642cf77ee797004a454fa441362723d0ba",
   "susfs_version": "2.3.0",
   "patch_commit": "547ae94bcaec53d030398f857950c64662043a5d",
   "common_commit": "f0826289c51653ee116c20c1dda9c87ad8a30636",
