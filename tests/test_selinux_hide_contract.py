@@ -1,8 +1,12 @@
-"""Check the real common-to-builtin SELinux routing boundary.
+"""Check the real SELinux routing boundary implemented in the common tree.
 
 The C harness exercises actual common wrappers with their callees replaced by
 argument-recording stubs. It proves routing and return propagation, not the
 correctness of SELinux policy decisions inside those callees.
+
+Since susfs b0e47464 the routing callees live in the common tree itself
+(susfs_selinux_setprocattr / susfs_sel_write_context / susfs_sel_write_access)
+instead of being delegated to the KernelSU builtin tree's my_* exports.
 """
 import argparse
 import os
@@ -35,17 +39,33 @@ def reject_fake_state(text, label):
 
 
 def check_declarations(builtin, hooks, filesystem):
-    for name, signature, common in (
-        ("my_setprocattr", r"int my_setprocattr\(const char \*name, void \*value, size_t size\)", hooks),
-        ("my_write_context", r"ssize_t my_write_context\(struct file \*file, char \*buf, size_t size\)", filesystem),
-        ("my_write_access", r"ssize_t my_write_access\(struct file \*file, char \*buf, size_t size\)", filesystem),
+    # Upstream moved the SELinux-hide implementation out of the KernelSU builtin
+    # tree and into the common tree (susfs 8930474a -> b0e47464, "Refactor
+    # selinux_hide"). The common tree now owns static susfs_* routing callees
+    # instead of delegating to the builtin my_* exports, so the contract is:
+    #   - the builtin still exports its real SELinux entry points;
+    #   - the common tree owns the routing callee locally;
+    #   - the common tree neither declares the builtin entry extern nor
+    #     shadows it with a same-named definition.
+    for name, builtin_signature, local_signature, common in (
+        ("my_setprocattr",
+         r"int my_setprocattr\(const char \*name, void \*value, size_t size\)",
+         r"int susfs_selinux_setprocattr\(const char \*name, void \*value, size_t size\)", hooks),
+        ("my_write_context",
+         r"ssize_t my_write_context\(struct file \*file, char \*buf, size_t size\)",
+         r"ssize_t susfs_sel_write_context\(struct file \*file, char \*buf, size_t size\)", filesystem),
+        ("my_write_access",
+         r"ssize_t my_write_access\(struct file \*file, char \*buf, size_t size\)",
+         r"ssize_t susfs_sel_write_access\(struct file \*file, char \*buf, size_t size\)", filesystem),
     ):
-        if not re.search(r"(?m)^" + signature + r"\s*\{", builtin):
+        if not re.search(r"(?m)^" + builtin_signature + r"\s*\{", builtin):
             raise AssertionError("builtin must export the real SELinux entry: " + name)
-        if not re.search(r"\bextern\s+" + signature + r";", common):
-            raise AssertionError("common prototype must match builtin: " + name)
-        if re.search(r"\bstatic\s+" + signature, common):
-            raise AssertionError("common must delegate instead of shadowing builtin: " + name)
+        if not re.search(r"(?m)^\s*static\s+" + local_signature + r"\s*\{", common):
+            raise AssertionError("common must own the local SELinux routing callee: " + name)
+        if re.search(r"\bextern\s+" + builtin_signature + r";", common):
+            raise AssertionError("common must not delegate to the builtin entry: " + name)
+        if re.search(r"(?m)^\s*static\s+" + builtin_signature, common):
+            raise AssertionError("common must not shadow the builtin entry: " + name)
     if not re.search(r"#ifdef CONFIG_KSU_SUSFS\s*LSM_HOOK_INIT\(setprocattr, handle_selinux_setprocattr\),\s*"
                      r"#else\s*LSM_HOOK_INIT\(setprocattr, selinux_setprocattr\)", hooks):
         raise AssertionError("LSM setprocattr must register the gated wrapper and original fallback")
@@ -81,7 +101,7 @@ static int selinux_setprocattr(const char *name, void *value, size_t size) {
     if (name != expected_name || value != expected_value || size != expected_size) bad_arguments = true;
     return set_result;
 }
-static int my_setprocattr(const char *name, void *value, size_t size) {
+static int susfs_selinux_setprocattr(const char *name, void *value, size_t size) {
     ++delegated[0];
     if (name != expected_name || value != expected_value || size != expected_size) bad_arguments = true;
     return set_result;
@@ -92,9 +112,9 @@ static ssize_t record_write(int index, bool delegate, struct file *file, char *b
     return write_result;
 }
 static ssize_t sel_write_context(struct file *file, char *buf, size_t size) { return record_write(1, false, file, buf, size); }
-static ssize_t my_write_context(struct file *file, char *buf, size_t size) { return record_write(1, true, file, buf, size); }
+static ssize_t susfs_sel_write_context(struct file *file, char *buf, size_t size) { return record_write(1, true, file, buf, size); }
 static ssize_t sel_write_access(struct file *file, char *buf, size_t size) { return record_write(2, false, file, buf, size); }
-static ssize_t my_write_access(struct file *file, char *buf, size_t size) { return record_write(2, true, file, buf, size); }
+static ssize_t susfs_sel_write_access(struct file *file, char *buf, size_t size) { return record_write(2, true, file, buf, size); }
 ''' + wrappers + r'''
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "SELinux routing CHECK line %d: %s\n", __LINE__, #x); return 1; } } while (0)
 int main(void) {
@@ -161,8 +181,8 @@ def check_sources(source, common):
             ("wrong_running_gate", "ksu_selinux_hide_running", "false"),
             ("wrong_uid_boundary", ">= 10000", ">= 9999"),
             ("wrong_current_gate", '!strcmp(name, "current")', "false"),
-            ("wrong_delegate_size", "my_write_access(file, buf, size)", "my_write_access(file, buf, size + 1)"),
-            ("wrong_delegate_return", "return my_setprocattr(name, value, size);", "(void)my_setprocattr(name, value, size); return 0;"),
+            ("wrong_delegate_size", "susfs_sel_write_access(file, buf, size)", "susfs_sel_write_access(file, buf, size + 1)"),
+            ("wrong_delegate_return", "return susfs_selinux_setprocattr(name, value, size);", "(void)susfs_selinux_setprocattr(name, value, size); return 0;"),
         ):
             if old not in wrappers:
                 raise AssertionError("missing exact mutation target: " + label)
