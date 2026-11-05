@@ -1,10 +1,10 @@
 {
-  "tag": "v4.3.0",
-  "release_commit": "e67b14e6bbbbd3e67f24df658a01d3e73a64159c",
-  "version": 41100,
+  "tag": "v4.3.0-r1",
+  "release_commit": "0a4c313287b0fc0b4cf95fced30a8dccc2eb913b",
+  "version": 41140,
   "uapi": 6,
   "features": 10004,
-  "kernelsu_commit": "b16e899a555e9b96aa1225f049cd7274820ca5b8",
+  "kernelsu_commit": "1cfa57340590971cba7521ed536da8ebbedc5f0a",
   "susfs_commit": "b0e474642cf77ee797004a454fa441362723d0ba",
   "susfs_version": "2.3.0",
   "patch_commit": "547ae94bcaec53d030398f857950c64662043a5d",
@@ -17,11 +17,16 @@
     "2024-05"
   ],
   "revision": "r13",
-  "apk_name": "SukiSU_v4.3.0_41100-release.apk",
-  "apk_sha256": "a928eb57ad34b105233f92dcd55e54dd883482e417970276329a7d0f0979e212",
+  "apk_name": "SukiSU_v4.3.0-r1_41140-release.apk",
+  "apk_sha256": "79a0db803e1f0bb952760f19250e5fc92566e2569581e4123c9db0b5e3c46bb9",
   "manager_certificate_sha256": "947ae944f3de4ed4c21a7e4f7953ecf351bfa2b36239da37a34111ad29993eef",
-  "backend_tag": "v4.3.0",
-  "manager_version": 41100,
-  "source_fingerprint": "dd713b5e3be3b54dca159d817f76fc54f52996cd656aa600c4d3be38b3b76d96",
-  "avc_backport_commit": "ff7dfe2dbc39f78a08ee6fcff23bc615b0f54ea2"
+  "backend_tag": "v4.3.0-r1",
+  "manager_version": 41140,
+  "source_fingerprint": "97f4ad66092a83a5af25ff5447a10fe9935be27b454a01c083a05ee14b30f098",
+  "avc_backport_commit": "ff7dfe2dbc39f78a08ee6fcff23bc615b0f54ea2",
+  "release_backport_commits": [
+    "8f6d140e906f17d2591588415c50b0fb59fb3c85",
+    "45fab659b621d53138f9bb9c0c1829219aa07c1c",
+    "85d05cf22bb0bcc7d41d555221d7eedc850b709f"
+  ]
 }

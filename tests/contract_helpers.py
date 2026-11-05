@@ -112,6 +112,7 @@ typedef uint32_t __u32;
 {"" if preinit else "#define KSU_NO_PREINIT 1"}
 #define pr_info(...) ((void)0)
 #define pr_warn(...) ((void)0)
+#define pr_warn_ratelimited(...) ((void)0)
 #define pr_err(...) ((void)0)
 {declarations}
 _Static_assert(sizeof(struct ksu_get_info_cmd) == 16, "get_info ABI size");

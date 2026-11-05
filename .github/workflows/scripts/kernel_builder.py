@@ -477,6 +477,7 @@ CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER=y
         setup_file = self.work_dir / "sukisu-setup.sh"
         resolved_manifest = self.work_dir / f"{self.config.target.name}-resolved-manifest.xml"
         manifest = {
+            **self.config.target.pins,
             "target": (f"{self.config.target.archive_name.removesuffix('-AnyKernel3.zip')} / KernelSU {self.config.target.version} / "
                        f"UAPI {self.config.target.uapi} / SUSFS {self.config.target.susfs_version}"),
             "common_commit": self.config.target.common_commit,

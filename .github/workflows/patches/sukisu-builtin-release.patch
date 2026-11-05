@@ -1,5 +1,24 @@
+diff --git a/kernel/Kconfig b/kernel/Kconfig
+index db57137..5eb1963 100644
+--- a/kernel/Kconfig
++++ b/kernel/Kconfig
+@@ -124,6 +124,14 @@ config KSU_SUSFS_SUS_MAP
+ 	  - It may not be able to evade detections by apps that implement a good injection detection.
+ 	  - Effective only on zygote/zygote_next spawned user app process that is marked with TIF_PROC_UMOUNTED
+ 
++config KSU_SUSFS_PRIORITY_UID_FILTER
++	bool "Enable to allow adding user-defined uids that will be hidden from getpriority/setpriority/ioprio_get/ioprio_set syscall"
++	depends on KSU_SUSFS
++	default y
++	help
++	  - Allow hiding user-defined uids from syscalls like getpriority/setpriority/ioprio_get/ioprio_set.
++	  - Effective on all processes with uid >= 10000.
++
+ endmenu
+ 
+ endmenu
 diff --git a/kernel/Makefile b/kernel/Makefile
-index 8492b9c..4c08883 100644
+index bed47b8..e3e3bdc 100644
 --- a/kernel/Makefile
 +++ b/kernel/Makefile
 @@ -20,40 +20,9 @@ endif
@@ -293,41 +312,51 @@ index 0000000..865b58c
 +void ksu_avc_spoof_exit(void);
 +
 +#endif
-diff --git a/kernel/feature/mount_hide.c b/kernel/feature/mount_hide.c
-index fb795ae..559be2e 100644
---- a/kernel/feature/mount_hide.c
-+++ b/kernel/feature/mount_hide.c
-@@ -7,6 +7,7 @@
- #include <linux/init.h>
- #include <linux/kernel.h>
- #include <linux/mount.h>
-+#include <linux/magic.h>
- #include <linux/mutex.h>
- #include <linux/printk.h>
- #include <linux/string.h>
-@@ -65,12 +66,17 @@ static const char *const ksu_proc_magic_names[] = { "mountinfo", "mounts", "moun
- static bool ksu_path_is_proc_mount_file(struct file *file)
- {
-     char buf[KSU_PROC_MAGIC_NAME_MAX];
-+    struct inode *inode;
-     const char *name;
-     size_t i;
+diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
+index f458e56..4d76863 100644
+--- a/kernel/feature/sucompat.c
++++ b/kernel/feature/sucompat.c
+@@ -57,7 +57,6 @@ int ksu_handle_execveat_init(struct filename *filename, struct user_arg_ptr *arg
+         const char __user *argv_user_ptr = get_user_arg_ptr(*argv_user, 0);
+         struct ksu_sulog_pending_event *pending_sucompat = NULL;
  
-     if (!file || !file->f_path.dentry)
-         return false;
+-        pr_info("hook_manager: escape to root for init executing ksud: %d\n", current->pid);
+         pending_sucompat = ksu_sulog_capture_sucompat(filename->name, argv_user, GFP_KERNEL);
+         escape_to_root_for_init();
+         if (ret) {
+diff --git a/kernel/hook/lsm_hook.c b/kernel/hook/lsm_hook.c
+index cf05225..080fb3d 100644
+--- a/kernel/hook/lsm_hook.c
++++ b/kernel/hook/lsm_hook.c
+@@ -44,7 +44,6 @@ static int handle_zygote_setresuid(uid_t ruid) {
+     // - Disable seccomp restriction for KSU manager since running with "su" will disable seccomp anyway
+     if (likely(ksu_is_manager_appid_valid()) && unlikely(is_uid_manager(ruid))) {
+         disable_seccomp();
+-        pr_info("install fd for manager: %d\n", ruid);
+         ksu_install_fd();
+         return 0;
+     }
+@@ -94,7 +93,6 @@ static int handle_zygote_next_setresuid(uid_t ruid) {
+     // - Disable seccomp restriction for KSU manager since running with "su" will disable seccomp anyway
+     if (likely(ksu_is_manager_appid_valid()) && unlikely(is_uid_manager(ruid))) {
+         disable_seccomp();
+-        pr_info("install fd for manager: %d\n", ruid);
+         ksu_install_fd();
+         return 0;
+     }
+@@ -159,7 +157,6 @@ static int ksu_task_fix_setuid(struct cred *new, const struct cred *old, int fla
  
-+    inode = file_inode(file);
-+    if (!inode || !inode->i_sb || inode->i_sb->s_magic != PROC_SUPER_MAGIC)
-+        return false;
-+
-     name = file->f_path.dentry->d_name.name;
-     if (!name)
-         return false;
+     if (unlikely(is_uid_manager(new_uid))) {
+         disable_seccomp();
+-        pr_info("install fd for manager: %d\n", new_uid);
+         ksu_install_fd();
+         return 0;
+     }
 diff --git a/kernel/include/uapi/feature.h b/kernel/include/uapi/feature.h
-index 4e9d562..e8deaa2 100644
+index df0acd2..56b1955 100644
 --- a/kernel/include/uapi/feature.h
 +++ b/kernel/include/uapi/feature.h
-@@ -18,6 +18,8 @@ enum ksu_feature_id {
+@@ -16,6 +16,8 @@ enum ksu_feature_id {
       */
      KSU_FEATURE_MOUNT_HIDE = 16,
  
@@ -337,7 +366,7 @@ index 4e9d562..e8deaa2 100644
  };
  
 diff --git a/kernel/ksu_main.c b/kernel/ksu_main.c
-index 4465240..0a5a300 100644
+index 8b1272d..7bb46b2 100644
 --- a/kernel/ksu_main.c
 +++ b/kernel/ksu_main.c
 @@ -36,6 +36,7 @@
@@ -348,7 +377,7 @@ index 4465240..0a5a300 100644
  #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
  #include "feature/selinux_hide.h"
  #endif
-@@ -117,6 +118,7 @@
+@@ -119,6 +120,7 @@
  #endif
  #include "feature/shell_su_adb_only.c"
  #include "feature/mount_hide.c"
@@ -356,7 +385,7 @@ index 4465240..0a5a300 100644
  #include "runtime/ksud.c"
  
  #include "sulog/event.c"
-@@ -181,6 +183,8 @@ int __init kernelsu_init(void)
+@@ -183,6 +185,8 @@ int __init kernelsu_init(void)
  
      ksu_sulog_init();
  
@@ -435,10 +464,10 @@ index 05ae163..6ecd3a2 100644
      }
  
 diff --git a/kernel/runtime/ksud.c b/kernel/runtime/ksud.c
-index ad6c657..c1a0beb 100644
+index 930aa46..a118648 100644
 --- a/kernel/runtime/ksud.c
 +++ b/kernel/runtime/ksud.c
-@@ -98,6 +98,7 @@ void on_boot_completed(void)
+@@ -100,6 +100,7 @@ void on_boot_completed(void)
  #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
      ksu_selinux_hide_drop_backup_if_unused();
  #endif
@@ -446,22 +475,102 @@ index ad6c657..c1a0beb 100644
  }
  
  #define MAX_ARG_STRINGS 0x7FFFFFFF
-
-diff --git a/kernel/Kconfig b/kernel/Kconfig
---- a/kernel/Kconfig
-+++ b/kernel/Kconfig
-@@ -124,6 +124,14 @@ config KSU_SUSFS_SUS_MAP
- 	  - It may not be able to evade detections by apps that implement a good injection detection.
- 	  - Effective only on zygote/zygote_next spawned user app process that is marked with TIF_PROC_UMOUNTED
-
-+config KSU_SUSFS_PRIORITY_UID_FILTER
-+	bool "Enable to allow adding user-defined uids that will be hidden from getpriority/setpriority/ioprio_get/ioprio_set syscall"
-+	depends on KSU_SUSFS
-+	default y
-+	help
-+	  - Allow hiding user-defined uids from syscalls like getpriority/setpriority/ioprio_get/ioprio_set.
-+	  - Effective on all processes with uid >= 10000.
-+
- endmenu
-
- endmenu
+@@ -592,15 +593,12 @@ static void vol_detector_event(struct input_handle *handle, unsigned int type, u
+ 
+     if (code == KEY_VOLUMEDOWN) {
+         vol_down_cnt++;
+-        pr_info("KEY_VOLUMEDOWN press detected!\n");
+     }
+ 
+     if (code == KEY_VOLUMEUP) {
+         vol_up_cnt++;
+-        pr_info("KEY_VOLUMEUP press detected!\n");
+     }
+ 
+-    pr_info("volume_pressed_count: vol_up: %d vol_down: %d\n", vol_up_cnt, vol_down_cnt);
+ 
+     /*
+ 	 * on upstream we call stop_input_hook() here but this is causing issues
+@@ -610,7 +608,6 @@ static void vol_detector_event(struct input_handle *handle, unsigned int type, u
+ 	 *
+ 	 */
+     if (vol_up_cnt >= VOLUME_PRESS_THRESHOLD_COUNT || vol_down_cnt >= VOLUME_PRESS_THRESHOLD_COUNT) {
+-        pr_info("volume keys pressed max times, safe mode detected!\n");
+         safe_mode_flag = true;
+     }
+ }
+diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
+index 3d5b86e..33595d8 100644
+--- a/kernel/selinux/rules.c
++++ b/kernel/selinux/rules.c
+@@ -11,17 +11,17 @@ extern int avc_ss_reset(u32 seqno);
+ extern int avc_ss_reset(struct selinux_avc *avc, u32 seqno);
+ #endif
+ // reset avc cache table, otherwise the new rules will not take effect if already denied
+-static void reset_avc_cache(void)
++static void reset_avc_cache(u32 seqno)
+ {
+ #if ((!defined(KSU_COMPAT_USE_SELINUX_STATE)) || LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0))
+-    avc_ss_reset(0);
+-    selnl_notify_policyload(0);
+-    selinux_status_update_policyload(0);
++    avc_ss_reset(seqno);
++    selnl_notify_policyload(seqno);
++    selinux_status_update_policyload(seqno);
+ #else
+     struct selinux_avc *avc = selinux_state.avc;
+-    avc_ss_reset(avc, 0);
+-    selnl_notify_policyload(0);
+-    selinux_status_update_policyload(&selinux_state, 0);
++    avc_ss_reset(avc, seqno);
++    selnl_notify_policyload(seqno);
++    selinux_status_update_policyload(&selinux_state, seqno);
+ #endif
+     selinux_xfrm_notify_policyload();
+ }
+@@ -193,11 +193,12 @@ void apply_kernelsu_rules(void)
+ 
+     apply_kernelsu_rules_fn((void *)db);
+ 
++    pol->latest_granting = old_pol->latest_granting + 1;
+     rcu_assign_pointer(selinux_state.policy, pol);
+     synchronize_rcu();
+     ksu_destroy_sepolicy(old_pol);
+ 
+-    reset_avc_cache();
++    reset_avc_cache(pol->latest_granting);
+ #ifdef CONFIG_KSU_SUSFS
+     susfs_set_batch_sid();
+ #endif
+@@ -254,7 +255,7 @@ do_stop_machine:
+ 
+ out_flush:
+     smp_mb();
+-    reset_avc_cache();
++    reset_avc_cache(0);
+ #endif
+ }
+ 
+@@ -609,11 +610,12 @@ int handle_sepolicy(void __user *user_data, u64 data_len)
+         cmd_index++;
+     }
+ 
++    pol->latest_granting = old_pol->latest_granting + 1;
+     rcu_assign_pointer(selinux_state.policy, pol);
+     synchronize_rcu();
+     ksu_destroy_sepolicy(old_pol);
+ 
+-    reset_avc_cache();
++    reset_avc_cache(pol->latest_granting);
+     ret = success_cmd_count;
+     goto out_unlock;
+ 
+@@ -768,7 +770,7 @@ out_done:
+         goto out_free;
+ 
+     smp_mb();
+-    reset_avc_cache();
++    reset_avc_cache(0);
+     ret = success_cmd_count;
+ 
+ out_free:

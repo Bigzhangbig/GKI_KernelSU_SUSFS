@@ -141,6 +141,24 @@ class LatestReleasePolicyTests(unittest.TestCase):
         self.assertEqual(calls[0], "releases/latest")
         self.assertEqual(target.manager_version, 40995)
 
+    def test_release_backports_are_explicit_immutable_source_pins(self):
+        from dataclasses import replace
+        commits = ("8f6d140e906f17d2591588415c50b0fb59fb3c85",
+                   "45fab659b621d53138f9bb9c0c1829219aa07c1c",
+                   "85d05cf22bb0bcc7d41d555221d7eedc850b709f")
+        target = replace(self.baseline, release_backport_commits=commits)
+        self.assertEqual(target.pins["release_backport_1_commit"], commits[0])
+        self.assertEqual(target.pins["release_backport_3_commit"], commits[2])
+        self.assertIn("+release-85d05cf2", target.full_version)
+        with patch.object(policy, "load_release_target", return_value=target):
+            policy.validate_target(target)
+            for changed in ((), commits[:-1], ("f" * 40,)):
+                with self.assertRaisesRegex(ValueError, "Backend recipe"):
+                    policy.validate_target(replace(target, release_backport_commits=changed))
+        for invalid in (("abc",), (1,), (commits[0], commits[0]), "bad", [commits[0]]):
+            with self.assertRaisesRegex(ValueError, "backport"):
+                policy._shape(replace(target, release_backport_commits=invalid))
+
     def test_changed_kernel_uapi_or_interaction_source_stops_before_download(self):
         for path in ("kernel/core/init.c", "uapi/supercall.h", *sorted(policy.INTERACTION_PATHS)):
             tree, blobs = source_tree({path: b"changed behavior\n"})

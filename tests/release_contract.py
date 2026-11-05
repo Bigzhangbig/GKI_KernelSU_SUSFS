@@ -14,6 +14,7 @@ import contract_helpers as base
 from test_mount_hide_contract import check_source as check_mount_hide_source
 from test_selinux_hide_contract import check_sources as check_selinux_hide_sources
 from test_avc_spoof_contract import check_source as check_avc_source, check_common as check_avc_common
+from test_policy_generation_contract import check_source as check_policy_generation_source
 
 TARGET = load_release_target()
 
@@ -428,6 +429,7 @@ def main():
     preinit_contract(source)
     check_avc_source(source, TARGET.avc_backport_commit)
     check_mount_hide_source((source / "kernel/feature/mount_hide.c").read_text())
+    check_policy_generation_source((source / "kernel/selinux/rules.c").read_text())
     if args.common is not None:
         common_contract(source, args.common.resolve())
         return
