@@ -22,7 +22,9 @@ jobs:
           remove-haskell: 'true'
           remove-codeql: 'true'
           remove-docker-images: 'true'
-          remove-large-packages: 'true'
+          # The runner image may omit packages assumed by the action (powershell).
+          # Directory and Docker cleanup above still reclaim the build space.
+          remove-large-packages: 'false'
           remove-swapfile: 'true'
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
