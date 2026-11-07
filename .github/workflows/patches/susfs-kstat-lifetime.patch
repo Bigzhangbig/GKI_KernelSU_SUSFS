@@ -552,8 +552,7 @@
  /* spoof_uname */
 --- a/fs/super.c
 +++ b/fs/super.c
-@@ -39,6 +39,9 @@
- #include <linux/fs_context.h>
+@@ -40,4 +40,7 @@
  #include <uapi/linux/mount.h>
  #include "internal.h"
 +#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
@@ -561,9 +560,7 @@
 +#endif
  
  static int thaw_super_locked(struct super_block *sb);
- 
-@@ -447,6 +450,9 @@
- 		shrink_dcache_for_umount(sb);
+@@ -448,4 +451,7 @@
  		sync_filesystem(sb);
  		sb->s_flags &= ~SB_ACTIVE;
 +#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
@@ -571,4 +568,3 @@
 +#endif
  
  		cgroup_writeback_umount();
- 

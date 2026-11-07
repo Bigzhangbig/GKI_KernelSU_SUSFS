@@ -6,6 +6,7 @@ real device/kernel acceptance remains separate. No SUSFS algorithm is reimplemen
 The fixed GPL source fixture permits offline baseline red/patch green experiments.
 """
 import argparse
+import base64
 import hashlib
 import os
 from pathlib import Path
@@ -22,6 +23,30 @@ BASELINE_SHA256 = {
     "fs/super.c": "59ce3744779d09265de591ac972440ec870ca535fba519f39879c5bffb89ec9c",
     "include/linux/susfs.h": "e0cf92e9974fe4d962829be3f40ae81639eae8ff000027cced4558ab438a10fc",
 }
+# Byte-for-byte fs/super.c diff extracted from
+# https://github.com/ShirkNeko/susfs4ksu/blob/b0e474642cf77ee797004a454fa441362723d0ba/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch
+# Applied to common f0826289c51653ee116c20c1dda9c87ad8a30636, exactly as CI does
+# before the local lifetime patch. The bundled source files already contain the
+# b0 SUSFS implementation/header; upstream's only additional fixture input here
+# is the complete super.c diff, including its mount logic hunks.
+UPSTREAM_SUPER_SHA256 = "ee43f7878f0f1c811df2f3d6977f0c88525938d5d11b0313c0018df77c886e28"
+STACKED_SUPER_SHA256 = "b4ce36f5cf17b4e8eb258b8b0f1471754899348bf266f3c37309cce11bb0ba33"
+# Exact failing include hunk shipped in local commit 3d110b2 and rejected by
+# real CI run 42353276390. Keep it as a negative integration example: upstream
+# inserts susfs_def.h between fs_context.h and uapi/linux/mount.h.
+FAILED_INCLUDE_HUNK = '''--- a/fs/super.c
++++ b/fs/super.c
+@@ -39,6 +39,9 @@
+ #include <linux/fs_context.h>
+ #include <uapi/linux/mount.h>
+ #include "internal.h"
++#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
++#include <linux/susfs.h>
++#endif
+\x20
+ static int thaw_super_locked(struct super_block *sb);
+\x20
+'''
 
 
 def _block(text, marker, end):
@@ -559,23 +584,36 @@ def check_mutations(common, hostcc=None):
                 raise AssertionError("mutation escaped static shutdown contract: " + name)
 
 
-def check_fixture(patch, hostcc=None, mutations=True):
-    """Run offline baseline red -> real patch apply -> same contract green."""
+def _extract_fixture(common):
     fixture = Path(__file__).parent / "fixtures/susfs-kstat-baseline.tar.gz"
     if not fixture.is_file():
         raise AssertionError("required fixed KSTAT source fixture missing: " + str(fixture))
     if hashlib.sha256(fixture.read_bytes()).hexdigest() != FIXTURE_SHA256:
         raise AssertionError("fixed KSTAT source archive identity changed")
+    with tarfile.open(fixture, "r:gz") as archive:
+        expected = {"fs/susfs.c", "fs/super.c", "include/linux/susfs.h"}
+        if set(archive.getnames()) != expected or any(not m.isfile() for m in archive):
+            raise AssertionError("unexpected KSTAT fixture members")
+        archive.extractall(common, filter="data")
+    for name, expected_hash in BASELINE_SHA256.items():
+        if hashlib.sha256((common / name).read_bytes()).hexdigest() != expected_hash:
+            raise AssertionError("fixed baseline source identity changed: " + name)
+
+
+def _strict_apply(common, patch, label):
+    for checking in (True, False):
+        command = ["git", "apply"] + (["--check"] if checking else []) + [str(Path(patch).resolve())]
+        applied = subprocess.run(command, cwd=common, capture_output=True, text=True, timeout=30)
+        if applied.returncode:
+            raise AssertionError(label + " failed strict " + ("check" if checking else "apply")
+                                 + ":\n" + applied.stderr)
+
+
+def check_fixture(patch, hostcc=None, mutations=True):
+    """Run offline baseline red -> real patch apply -> same contract green."""
     with tempfile.TemporaryDirectory(prefix="susfs-kstat-fixture-") as directory:
         common = Path(directory)
-        with tarfile.open(fixture, "r:gz") as archive:
-            expected = {"fs/susfs.c", "fs/super.c", "include/linux/susfs.h"}
-            if set(archive.getnames()) != expected or any(not m.isfile() for m in archive):
-                raise AssertionError("unexpected KSTAT fixture members")
-            archive.extractall(common, filter="data")
-        for name, expected_hash in BASELINE_SHA256.items():
-            if hashlib.sha256((common / name).read_bytes()).hexdigest() != expected_hash:
-                raise AssertionError("fixed baseline source identity changed: " + name)
+        _extract_fixture(common)
         try:
             check_common(common, hostcc)
         except AssertionError as error:
@@ -584,19 +622,50 @@ def check_fixture(patch, hostcc=None, mutations=True):
             print("baseline red (compiled and executed): " + str(error).splitlines()[-1])
         else:
             raise AssertionError("baseline unexpectedly passed inode reclaim contract")
-        applied = subprocess.run(["git", "apply", "--unsafe-paths", str(Path(patch).resolve())],
-                                 cwd=common, capture_output=True, text=True, timeout=30)
-        if applied.returncode:
-            raise AssertionError("actual KSTAT patch failed against fixed fixture:\n" + applied.stderr)
+        _strict_apply(common, patch, "actual KSTAT patch against raw fixed fixture")
         check_common(common, hostcc)
         if mutations:
             check_mutations(common, hostcc)
+
+
+def check_stacked_fixture(patch, hostcc=None):
+    """Reproduce the actual upstream SUSFS -> local lifetime patch composition."""
+    encoded = Path(__file__).parent / "fixtures/upstream-susfs-b0-super.patch.b64"
+    if not encoded.is_file():
+        raise AssertionError("required exact b0 upstream super.c diff fixture missing")
+    upstream_bytes = base64.b64decode(encoded.read_bytes().strip(), validate=True)
+    if hashlib.sha256(upstream_bytes).hexdigest() != UPSTREAM_SUPER_SHA256:
+        raise AssertionError("required exact b0 upstream super.c diff missing or changed")
+    with tempfile.TemporaryDirectory(prefix="susfs-kstat-stacked-fixture-") as directory:
+        common = Path(directory)
+        _extract_fixture(common)
+        upstream = common / "upstream-susfs-b0-super.patch"
+        upstream.write_bytes(upstream_bytes)
+        _strict_apply(common, upstream, "exact b0 upstream SUSFS super.c diff")
+        if hashlib.sha256((common / "fs/super.c").read_bytes()).hexdigest() != STACKED_SUPER_SHA256:
+            raise AssertionError("upstream-stacked common super.c identity changed")
+        broken = common / "old-lifetime-include.patch"
+        broken.write_text(FAILED_INCLUDE_HUNK)
+        red = subprocess.run(["git", "apply", "--check", str(broken)], cwd=common,
+                             capture_output=True, text=True, timeout=30)
+        if red.returncode != 1 or "patch failed: fs/super.c:39" not in red.stderr:
+            raise AssertionError("old include hunk must fail strict apply on the actual upstream stack:\n" + red.stderr)
+        if hashlib.sha256((common / "fs/super.c").read_bytes()).hexdigest() != STACKED_SUPER_SHA256:
+            raise AssertionError("failed old-patch check mutated the stacked source")
+        print("stack integration red: old include hunk fails strict apply at fs/super.c:39")
+        _strict_apply(common, patch, "local KSTAT patch after exact upstream SUSFS stack")
+        check_common(common, hostcc)
+        print("PASS offline actual stack: f082 common -> exact b0 upstream super.c -> strict local patch -> host contract")
 
 
 class KstatLifetimeContractTests(unittest.TestCase):
     def test_fixed_baseline_real_patch_and_runtime_mutations(self):
         patch = Path(__file__).resolve().parents[1] / ".github/workflows/patches/susfs-kstat-lifetime.patch"
         check_fixture(patch)
+
+    def test_exact_upstream_stack_then_strict_local_patch(self):
+        patch = Path(__file__).resolve().parents[1] / ".github/workflows/patches/susfs-kstat-lifetime.patch"
+        check_stacked_fixture(patch)
 
 
 def main():
@@ -609,6 +678,7 @@ def main():
     args = parser.parse_args()
     if args.fixture_patch:
         check_fixture(args.fixture_patch, args.hostcc)
+        check_stacked_fixture(args.fixture_patch, args.hostcc)
     else:
         check_common(args.common, args.hostcc)
         if args.check_mutations:
