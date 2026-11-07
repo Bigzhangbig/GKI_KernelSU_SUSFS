@@ -55,6 +55,36 @@ python -m unittest discover -s tests -v
 
 `release_backport_commits` 与 AVC 来源均为不可替换的完整 SHA，逐项写入产物清单；补丁 SHA256 与源码合同 SHA256 随构建保存。保留历史 Git 提交作为回退记录，删除的是当前构建中重复的补丁内容。
 
+## KSTAT inode 生命周期补丁
+
+`codex/susfs-kstat-lifetime` 在当前 41140 配方上增加独立的
+`susfs-kstat-lifetime.patch`。它针对已登记的 KSTAT 规则在 inode 缓存回收后
+失去 mapping 标记的问题：规则持有实际被标记 inode 的引用，规则替换后经
+RCU 等待再释放，文件系统退出时在 `evict_inodes` 前清理对应规则。
+临时路径引用只保留到登记或失败清理结束，不永久固定 mount。
+
+同路径重新登记会清理所有旧规则，包括目录重建后 inode 编号变化的情况；
+查询同时核对完整 inode、设备号及接口提供的 FUSE 类别，避免哈希桶碰撞误匹配。
+用户态 KSTAT 结构和命令参数保持不变。参考了下游
+[KSTAT 引用固定实现](https://github.com/zen-wistaria/susfs-backport/commit/e8bec7cafc5786219e7d6902f3e434f569b5b7ae)，
+没有整份移植其 4.19 补丁。
+
+构建前对真实已打补丁 C 源码运行生命周期合同，manifest 单独记录本补丁与
+合同文件的 SHA256，产物检查复核两者。独立运行合同：
+
+```sh
+python tests/test_kstat_lifetime_contract.py --common /PATH/TO/common
+```
+
+仅给现有 r1 内核加此补丁时，使用 **Kernel Build → pinned_release=true**，
+或给本地 `build.py` 加 `--pinned-release`。它只选择仓库已审查配方，仍按精确
+正式 tag 活校验源码指纹、APK 签名和摘要；不会改用未适配的 r2，也不接受任意
+版本或 SHA。默认 false 的最新 Release 检查维持原规则。
+
+host 合同模拟文件系统引用和 RCU 服务，用于验证被提取的实际 C 控制流；
+完整内核编译、设备启动及长期持久性分别验收。此补丁只覆盖对象回收导致的
+标记丢失，不能保证修复同一对象的 flags 被其他代码主动清除的情形。
+
 ## 保留的兼容改动与限制
 
 SuSFS 2.3.0 的现有 exec hooks 尚未接通新版 builtin 的 preinit runner，因此显式定义 `KSU_NO_PREINIT`，不回报 PREINIT 支持，管理器继续使用常规模块启动流程。此构建不宣称支持 preinit。

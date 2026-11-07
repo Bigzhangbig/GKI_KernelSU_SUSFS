@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build exactly the audited latest official Release."""
+"""Build an audited official Release, using latest or an explicit pinned snapshot."""
 import argparse
 from datetime import datetime
 import json
@@ -11,7 +11,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent))
 from config import BuildConfig
 from kernel_builder import BuildResult, KernelBuilder
-from release_target import resolve_latest_release
+from release_target import load_release_target, resolve_latest_release, verify_release_snapshot
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -22,20 +22,25 @@ def parse_args():
     parser.add_argument("--workspace", "-w", default=os.environ.get("GKI_WORKSPACE", "/tmp/gki-build"))
     parser.add_argument("--output-json")
     parser.add_argument("--dry-run", action="store_true", help="Validate the recipe against the latest official Release without cloning")
+    parser.add_argument("--pinned-release", action="store_true",
+                        help="Validate and build only the repository's immutable audited Release snapshot")
     parser.add_argument("--verbose", "-v", action="store_true")
     return parser.parse_args()
 
 
 def create_build_config(args):
-    return BuildConfig(target=resolve_latest_release())
+    return BuildConfig(target=load_release_target() if getattr(args, "pinned_release", False) else resolve_latest_release())
 
 
-def build_single(config, workspace, dry_run=False):
+def build_single(config, workspace, dry_run=False, pinned_release=False):
     if dry_run:
-        if resolve_latest_release() != config.target:
+        if pinned_release:
+            verify_release_snapshot(config.target)
+        elif resolve_latest_release() != config.target:
             raise ValueError("Latest Release does not match the audited build target")
-        return BuildResult(success=True, config=config, message="Latest official Release and audited recipe validated; no build performed")
-    return KernelBuilder(config, workspace).build()
+        selection = "Pinned official Release snapshot" if pinned_release else "Latest official Release"
+        return BuildResult(success=True, config=config, message=f"{selection} and audited recipe validated; no build performed")
+    return KernelBuilder(config, workspace, pinned_release=pinned_release).build()
 
 
 def print_summary(results, output_json=None):
@@ -58,7 +63,7 @@ def main():
         logging.getLogger().setLevel(logging.DEBUG)
     try:
         config = create_build_config(args)
-        result = build_single(config, args.workspace, args.dry_run)
+        result = build_single(config, args.workspace, args.dry_run, pinned_release=args.pinned_release)
         print_summary([result], args.output_json)
         return 0 if result.success else 1
     except Exception as exc:

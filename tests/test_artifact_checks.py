@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 
 SCRIPTS = Path(__file__).resolve().parents[1] / ".github/workflows/scripts"
@@ -25,7 +26,7 @@ class ArtifactChecksTests(unittest.TestCase):
                               susfs_version="9.8.7", kernel_tuple=("android99", "6.1", "23", "2099-01"))
         enabled = ("KPROBES", "KSU", "KSU_SUSFS", "KSU_SUSFS_SUS_PATH", "KSU_SUSFS_SUS_MOUNT",
                    "KSU_SUSFS_SUS_MAP", "KSU_SUSFS_SPOOF_UNAME", "KSU_SUSFS_OPEN_REDIRECT",
-                   "KSU_SUSFS_PRIORITY_UID_FILTER")
+                   "KSU_SUSFS_PRIORITY_UID_FILTER", "KSU_SUSFS_SUS_KSTAT")
         self.config = "".join(f"CONFIG_{name}=y\n" for name in enabled)
         self.config += "# CONFIG_KPM is not set\n# CONFIG_KSU_DEBUG is not set\n"
         (self.folder / "kernel.config").write_text(self.config)
@@ -69,6 +70,7 @@ class ArtifactChecksTests(unittest.TestCase):
                 ("CONFIG_KPROBES", "CONFIG_KPROBES=y", "# CONFIG_KPROBES is not set"),
                 ("CONFIG_KPM", "# CONFIG_KPM is not set", "CONFIG_KPM=y"),
                 ("CONFIG_KSU_DEBUG", "# CONFIG_KSU_DEBUG is not set", "CONFIG_KSU_DEBUG=y"),
+                ("CONFIG_KSU_SUSFS_SUS_KSTAT", "CONFIG_KSU_SUSFS_SUS_KSTAT=y", "# CONFIG_KSU_SUSFS_SUS_KSTAT is not set"),
                 ("CONFIG_KSU_SUSFS", "CONFIG_KSU_SUSFS=y", "# CONFIG_KSU_SUSFS is not set")):
             with self.subTest(key=key):
                 config = self.config.replace(before, after)
@@ -92,6 +94,14 @@ class ArtifactChecksTests(unittest.TestCase):
             checks.check_archive(self.folder, self.target)
 
     def test_manifest_pins_and_release_identity_are_required(self):
+        kstat_patch = self.folder / "kstat.patch"
+        kstat_patch.write_text("actual KSTAT patch\n")
+        kstat_contract = self.folder / "kstat_contract.py"
+        kstat_contract.write_text("# actual KSTAT contract\n")
+        for name, path in (("KSTAT_PATCH", kstat_patch), ("KSTAT_CONTRACT", kstat_contract)):
+            override = patch.object(checks, name, path, create=True)
+            override.start()
+            self.addCleanup(override.stop)
         resolved = self.folder / checks.RESOLVED_NAME
         resolved.write_text("<manifest/>\n")
         manifest = dict(self.target.pins,
@@ -103,6 +113,8 @@ class ArtifactChecksTests(unittest.TestCase):
                         source_fingerprint=self.target.source_fingerprint, full_version=self.target.full_version,
                         official_manager_apk_sha256=self.target.apk_sha256,
                         official_manager_certificate_sha256=self.target.manager_certificate_sha256,
+                        kstat_lifetime_patch_sha256=checks.sha256(kstat_patch),
+                        kstat_lifetime_contract_sha256=checks.sha256(kstat_contract),
                         build_config=dict(release=True, use_kpm=False, make_release=False))
         path = self.folder / checks.MANIFEST_NAME
         (self.folder / "build-result.json").write_text(json.dumps(
@@ -113,11 +125,23 @@ class ArtifactChecksTests(unittest.TestCase):
                              ("release_tag", "v0.0.0"), ("release_commit", "0" * 40),
                              ("manager_version", 99999), ("backend_version", 99999),
                              ("source_fingerprint", "f" * 64), ("official_manager_apk_sha256", "f" * 64),
+                             ("kstat_lifetime_patch_sha256", "0" * 64),
+                             ("kstat_lifetime_contract_sha256", "0" * 64),
                              ("build_config", dict(release=False, use_kpm=False, make_release=False))):
             with self.subTest(field=field):
                 path.write_text(json.dumps(dict(manifest, **{field: value})))
                 with self.assertRaises(RuntimeError):
                     checks.check_manifest(self.folder, self.target)
+        for field in ("kstat_lifetime_patch_sha256", "kstat_lifetime_contract_sha256"):
+            without_digest = dict(manifest)
+            del without_digest[field]
+            path.write_text(json.dumps(without_digest))
+            with self.subTest(missing=field), self.assertRaisesRegex(RuntimeError, "KSTAT"):
+                checks.check_manifest(self.folder, self.target)
+        path.write_text(json.dumps(manifest))
+        kstat_patch.write_text("changed KSTAT patch\n")
+        with self.assertRaisesRegex(RuntimeError, "KSTAT"):
+            checks.check_manifest(self.folder, self.target)
 
     def test_checksum_set_duplicates_and_tampering_are_rejected(self):
         for path in self.folder.iterdir():

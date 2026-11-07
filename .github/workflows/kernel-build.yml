@@ -2,6 +2,11 @@ name: Kernel Build
 
 on:
   workflow_dispatch:
+    inputs:
+      pinned_release:
+        description: Build the immutable audited Release snapshot instead of selecting latest
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -49,12 +54,18 @@ jobs:
           path: ~/.ccache
           key: release-ccache-${{ github.sha }}
           restore-keys: release-ccache-
-      - name: Build the latest compatible official Release
+      - name: Build audited official Release
+        env:
+          PINNED_RELEASE: ${{ inputs.pinned_release }}
         run: |
           set -euo pipefail
           workspace="/tmp/gki-release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          extra_args=()
+          if [[ "$PINNED_RELEASE" == "true" ]]; then
+            extra_args+=(--pinned-release)
+          fi
           python .github/workflows/scripts/build.py \
-            --workspace "$workspace" --output-json "$workspace/build-result.json"
+            --workspace "$workspace" --output-json "$workspace/build-result.json" "${extra_args[@]}"
       - name: Collect original kernel and exact build evidence
         run: |
           set -euo pipefail

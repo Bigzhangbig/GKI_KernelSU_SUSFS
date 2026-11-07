@@ -12,6 +12,8 @@ from pathlib import Path
 
 MANIFEST_NAME = "release-manifest.json"
 RESOLVED_NAME = "release-resolved-manifest.xml"
+KSTAT_PATCH = Path(__file__).resolve().parent.parent / "patches/susfs-kstat-lifetime.patch"
+KSTAT_CONTRACT = Path(__file__).resolve().parents[3] / "tests/test_kstat_lifetime_contract.py"
 FUNCTIONS = ("do_get_info", "do_get_info_legacy", "do_report_event", "do_extension", "do_lookup_symbols",
              "avc_slow_audit_pre_handler", "slow_avc_audit")
 
@@ -61,6 +63,10 @@ def check_manifest(source: Path, target) -> dict:
                  "resolved source manifest hash differs")
     require(manifest.get("release_tag") == target.tag and
                  manifest.get("release_commit") == target.release_commit, "official Release identity differs")
+    for key, path in (("kstat_lifetime_patch_sha256", KSTAT_PATCH),
+                      ("kstat_lifetime_contract_sha256", KSTAT_CONTRACT)):
+        require(path.is_file(), "Required KSTAT identity input is missing: " + str(path))
+        require(manifest.get(key) == sha256(path), "Release manifest KSTAT identity mismatch: " + key)
     for key, expected in {
             "manager_version": target.manager_version, "backend_tag": target.backend_tag,
             "backend_version": target.version, "backend_source_commit": target.kernelsu_commit,
@@ -97,7 +103,7 @@ def check_archive(source: Path, target) -> tuple[bytes, dict]:
     for key in ("CONFIG_KSU", "CONFIG_KSU_SUSFS", "CONFIG_KSU_SUSFS_SUS_PATH",
                 "CONFIG_KSU_SUSFS_SUS_MOUNT", "CONFIG_KSU_SUSFS_SUS_MAP",
                 "CONFIG_KSU_SUSFS_SPOOF_UNAME", "CONFIG_KSU_SUSFS_OPEN_REDIRECT",
-                "CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER"):
+                "CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER", "CONFIG_KSU_SUSFS_SUS_KSTAT"):
         require(f"{key}=y" in lines, f"{key} is not enabled")
     for key in ("CONFIG_KPM", "CONFIG_KSU_DEBUG"):
         require(f"# {key} is not set" in lines, f"{key} is enabled or missing")

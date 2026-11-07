@@ -356,6 +356,8 @@ int main(void) {
 
 
 def common_contract(source, common):
+    from test_kstat_lifetime_contract import check_common as check_kstat_common
+    check_kstat_common(common)
     check_avc_common(common)
     check_selinux_hide_sources(source, common)
     kernel = source / "kernel"
