@@ -214,7 +214,9 @@ class OfficialApkIntegration(unittest.TestCase):
             "a928eb57ad34b105233f92dcd55e54dd883482e417970276329a7d0f0979e212":
                 ("v4.3.0", 41100, 6),
             "79a0db803e1f0bb952760f19250e5fc92566e2569581e4123c9db0b5e3c46bb9":
-                ("v4.3.0-r1", 41140, 6)}
+                ("v4.3.0-r1", 41140, 6),
+            "6fe64e7bcf9fd768c58f46afea2f27ee9fb85d2783472a7e81334df21e700636":
+                ("v4.3.0-r2", 41150, 6)}
         self.assertIn(result["sha256"], official, "Unreviewed official APK fixture")
         name, code, uapi = official[result["sha256"]]
         self.assertEqual(result, {

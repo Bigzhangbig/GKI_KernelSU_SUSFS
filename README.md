@@ -2,7 +2,7 @@
 
 `main` 只维护正式 Release 构建。每次校验或构建都会查询 SukiSU-Ultra 最新的正式 Release，核对源码接口、官方 APK 签名和 native UAPI，再决定能否继续。
 
-构建目标是 **Android 12 / Linux 5.10.209 / 2024-05 / r13**，使用 SUSFS **2.3.0**（含 priority UID filter），关闭 KPM 和 KSU_DEBUG。当前配方对应 **v4.3.0-r1 / 41140 / UAPI6**，用于 Redmi K50 rubens；不声明支持其他 GKI 组合。
+构建目标是 **Android 12 / Linux 5.10.209 / 2024-05 / r13**，使用 SUSFS **2.3.0**（含 priority UID filter），关闭 KPM 和 KSU_DEBUG。当前配方对应 **v4.3.0-r2 / 41150 / UAPI6**，用于 Redmi K50 rubens；不声明支持其他 GKI 组合。
 
 ## 分支与更新规则
 
@@ -15,7 +15,7 @@
 
 新版只有在内核源码、UAPI、管理器与内核交互的源码指纹保持一致，且官方 APK 签名和 native UAPI 校验通过时，才会自动接受。只有管理器更新时，可以使用新版管理器继续构建已验证的内核后端。
 
-当前是针对 5.10 builtin 的 r1 适配构建，完整身份为 **v4.3.0-r1-1cfa5734+avc-ff7dfe2d+release-85d05cf2@builtin / 41140 / UAPI6**。官方 release 树与 builtin 长期分支不同；实际 builtin SHA、官方增量移植来源和补丁摘要均单独保存。管理器后续更新不会自动改写该后端身份。若内核或接口发生变化，构建会停止，等待审查、适配与验证。
+当前是针对 5.10 builtin 的 r2 适配构建，完整身份为 **v4.3.0-r2-1cfa5734+avc-ff7dfe2d+release-85d05cf2@builtin / 41150 / UAPI6**。官方 release 树与 builtin 长期分支不同；实际 builtin SHA、官方增量移植来源和补丁摘要均单独保存。管理器后续更新不会自动改写该后端身份。若内核或接口发生变化，构建会停止，等待审查、适配与验证。
 
 已审查的后端配方位于 [.github/release-target.json](.github/release-target.json)。构建产物中的 `release-target.json` 则记录该次实际选中的正式 Release 和官方 APK 身份，供后续复验使用。
 
@@ -43,9 +43,11 @@ python -m unittest discover -s tests -v
 
 构建会验证精确源码提交、补丁与真实 C 行为，检查生成配置、Image/vmlinux/System.map、ZIP 中的 Image，以及 ELF 与打包后二进制的一致性。任何必需检查失败时均不导出“已验证”内核包。Actions 产物验证与实际设备启动、root、休眠唤醒等验收分别进行。
 
-## r1 源码与补丁清理
+## r1/r2 源码与补丁清理
 
-官方 release 为 `0a4c313287b0fc0b4cf95fced30a8dccc2eb913b`，builtin 基线为 `1cfa57340590971cba7521ed536da8ebbedc5f0a`。保留原生 UAPI6、扩展中心、version-spoof 和符号查询。内核 release banner 沿用已核对的 rubens 原厂值；实际构建来源以清单和摘要为准。
+v4.3.0-r2 适配（2026-11-08）：官方变更仅在 manager 侧 —— `build.gradle.kts` 增加 core library desugaring（java.time/java.nio.file 的 Android 7 兼容）、`Natives.kt` 删除一行注释；`kernel/`、`uapi/`、`userspace/` 与 r1 字节一致，builtin 长期分支无漂移，susfs、补丁、AVC backport 与 release backports 全部沿用原 pin。r2 APK（`6fe64e7b…`）签名证书与 pin 一致。
+
+官方 release 为 `645ef9860b9b7f900bb5d1b27e224f2c311d39c0`，builtin 基线为 `1cfa57340590971cba7521ed536da8ebbedc5f0a`。保留原生 UAPI6、扩展中心、version-spoof 和符号查询。内核 release banner 沿用已核对的 rubens 原厂值；实际构建来源以清单和摘要为准。
 
 - 删除旧的 mount-hide procfs 保护补丁：新版 builtin 已原生检查 procfs，并在首次读取时安装记录过滤器，避免旧版拒绝打开挂载文件造成的崩溃。默认启用状态遵循官方新版（关闭）；测试检查三类 proc 文件、普通 ext4/f2fs、过滤、回退和错误保留。
 - `708f083` 文件引用修复已有 builtin 等效实现，不重复移植。
