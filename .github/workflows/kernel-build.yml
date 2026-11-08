@@ -5,6 +5,7 @@ on:
 
 permissions:
   contents: read
+  packages: read
 
 env:
   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -13,28 +14,23 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    # 预构建编译环境镜像（.github/docker/Dockerfile，由 Container Image workflow 发布），
+    # 依赖安装与 Python 由镜像固化，本作业不再执行 apt/setup-python。
+    container:
+      image: ghcr.io/bigzhangbig/gki-kernel-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    # 容器作业的 run 步骤默认 shell 是 sh（不支持 pipefail），统一指定 bash。
+    defaults:
+      run:
+        shell: bash
     steps:
-      - name: Maximize build space
-        uses: AdityaGarg8/remove-unwanted-software@v5
-        with:
-          remove-dotnet: 'true'
-          remove-android: 'true'
-          remove-haskell: 'true'
-          remove-codeql: 'true'
-          remove-docker-images: 'true'
-          # The runner image may omit packages assumed by the action (powershell).
-          # Directory and Docker cleanup above still reclaim the build space.
-          remove-large-packages: 'false'
-          remove-swapfile: 'true'
+      # 注意：容器作业内无法清理宿主 runner 磁盘（remove-unwanted-software 类步骤失效），
+      # 磁盘水位改由该步骤观测，空间不足时再考虑挂载宿主 /mnt 卷。
+      - name: Report build space
+        run: df -h / /tmp "$GITHUB_WORKSPACE"
       - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-      - name: Install build and Release inspection dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential linux-libc-dev bc bison flex libssl-dev libelf-dev \
-            ccache git gh curl wget zip unzip xz-utils openssl pixz binutils-aarch64-linux-gnu apksigner
       - name: Verify build integration
         run: python -m unittest discover -s tests -v
       - name: Configure ccache
