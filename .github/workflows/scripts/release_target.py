@@ -50,8 +50,6 @@ class ReleaseTarget:
     apk_name: str
     apk_sha256: str
     manager_certificate_sha256: str
-    avc_backport_commit: str | None = None
-    release_backport_commits: tuple = ()
     # Stock rubens banner alignment (see stock_boot_banner notes in the audit docs):
     # appended after EXTRAVERSION so KERNELRELEASE equals the official MIUI release,
     # and baked into mkcompile_h UTS_VERSION. LOCALVERSION_AUTO must be disabled
@@ -65,9 +63,7 @@ class ReleaseTarget:
 
     @property
     def full_version(self):
-        backport = f"+avc-{self.avc_backport_commit[:8]}" if self.avc_backport_commit else ""
-        release = f"+release-{self.release_backport_commits[-1][:8]}" if self.release_backport_commits else ""
-        return f"{self.backend_tag}-{self.kernelsu_commit[:8]}{backport}{release}@builtin"
+        return f"{self.backend_tag}-{self.kernelsu_commit[:8]}@builtin"
 
     @property
     def archive_name(self):
@@ -76,24 +72,11 @@ class ReleaseTarget:
 
     @property
     def pins(self):
-        pins = {key: getattr(self, key) for key in
+        return {key: getattr(self, key) for key in
                 ("common_commit", "kernelsu_commit", "susfs_commit", "patch_commit", "anykernel_commit")}
-        if self.avc_backport_commit is not None:
-            pins["avc_backport_commit"] = self.avc_backport_commit
-        pins.update({f"release_backport_{i}_commit": commit
-                     for i, commit in enumerate(self.release_backport_commits, 1)})
-        return pins
 
 
 def _shape(target):
-    if (not isinstance(target.release_backport_commits, tuple)
-            or any(not isinstance(commit, str) or SHA.fullmatch(commit) is None
-                   for commit in target.release_backport_commits)
-            or len(set(target.release_backport_commits)) != len(target.release_backport_commits)):
-        raise ValueError("Release backports require distinct complete official source SHAs")
-    if target.avc_backport_commit is not None and (
-            not isinstance(target.avc_backport_commit, str) or SHA.fullmatch(target.avc_backport_commit) is None):
-        raise ValueError("AVC backport requires a complete official source SHA")
     for key in ("release_commit", "common_commit", "kernelsu_commit", "susfs_commit", "patch_commit", "anykernel_commit"):
         if not isinstance(getattr(target, key), str) or SHA.fullmatch(getattr(target, key)) is None:
             raise ValueError("Release requires a complete source SHA: " + key)
@@ -113,7 +96,6 @@ def _shape(target):
 def load_release_target():
     data = json.loads(RECIPE.read_text())
     data["kernel_tuple"] = tuple(data["kernel_tuple"])
-    data["release_backport_commits"] = tuple(data.get("release_backport_commits", ()))
     return _shape(ReleaseTarget(**data))
 
 
@@ -128,7 +110,6 @@ def validate_target(target):
 def load_target_file(path):
     data = json.loads(Path(path).read_text())
     data["kernel_tuple"] = tuple(data["kernel_tuple"])
-    data["release_backport_commits"] = tuple(data.get("release_backport_commits", ()))
     return validate_target(ReleaseTarget(**data))
 
 

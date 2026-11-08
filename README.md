@@ -15,7 +15,7 @@
 
 新版只有在内核源码、UAPI、管理器与内核交互的源码指纹保持一致，且官方 APK 签名和 native UAPI 校验通过时，才会自动接受。只有管理器更新时，可以使用新版管理器继续构建已验证的内核后端。
 
-当前是针对 5.10 builtin 的 r2 适配构建，完整身份为 **v4.3.0-r2-1cfa5734+avc-ff7dfe2d+release-85d05cf2@builtin / 41150 / UAPI6**。官方 release 树与 builtin 长期分支不同；实际 builtin SHA、官方增量移植来源和补丁摘要均单独保存。管理器后续更新不会自动改写该后端身份。若内核或接口发生变化，构建会停止，等待审查、适配与验证。
+当前是针对 5.10 builtin 的 r2 适配构建，完整身份为 **v4.3.0-r2-1cfa5734@builtin / 41150 / UAPI6 / features 17**。官方 `kernel/`、`uapi/`、`userspace/` 源码**原样使用，不做 fork 修改**；保留的只有两处构建胶水（见下节）。管理器后续更新不会自动改写该后端身份。若内核或接口发生变化，构建会停止，等待审查、适配与验证。
 
 已审查的后端配方位于 [.github/release-target.json](.github/release-target.json)。构建产物中的 `release-target.json` 则记录该次实际选中的正式 Release 和官方 APK 身份，供后续复验使用。
 
@@ -45,17 +45,29 @@ python -m unittest discover -s tests -v
 
 ## r1/r2 源码与补丁清理
 
-v4.3.0-r2 适配（2026-11-08）：官方变更仅在 manager 侧 —— `build.gradle.kts` 增加 core library desugaring（java.time/java.nio.file 的 Android 7 兼容）、`Natives.kt` 删除一行注释；`kernel/`、`uapi/`、`userspace/` 与 r1 字节一致，builtin 长期分支无漂移，susfs、补丁、AVC backport 与 release backports 全部沿用原 pin。r2 APK（`6fe64e7b…`）签名证书与 pin 一致。
+v4.3.0-r2 适配（2026-11-08）：官方变更仅在 manager 侧 —— `build.gradle.kts` 增加 core library desugaring（java.time/java.nio.file 的 Android 7 兼容）、`Natives.kt` 删除一行注释；`kernel/`、`uapi/`、`userspace/` 与 r1 字节一致。
 
 官方 release 为 `645ef9860b9b7f900bb5d1b27e224f2c311d39c0`，builtin 基线为 `1cfa57340590971cba7521ed536da8ebbedc5f0a`。保留原生 UAPI6、扩展中心、version-spoof 和符号查询。内核 release banner 沿用已核对的 rubens 原厂值；实际构建来源以清单和摘要为准。
 
-- 删除旧的 mount-hide procfs 保护补丁：新版 builtin 已原生检查 procfs，并在首次读取时安装记录过滤器，避免旧版拒绝打开挂载文件造成的崩溃。默认启用状态遵循官方新版（关闭）；测试检查三类 proc 文件、普通 ext4/f2fs、过滤、回退和错误保留。
-- `708f083` 文件引用修复已有 builtin 等效实现，不重复移植。
-- 补齐 `8f6d140`、`45fab659` 在 builtin 中遗漏的原子输入回调及高频路径日志清理，保留控制流。
-- 从 `85d05cf22bb0bcc7d41d555221d7eedc850b709f` 移植 SELinux generation 修复：两个策略发布点递增 generation，缓存刷新和通知使用同一个新值。真实 C 合同检查顺序和通知参数，并用定向反例验证断言能检出缺陷。
-- `e03a37d` 针对模块/BTF 的 ABI 改动不适用于本次 5.10 builtin 路径，不引入相关依赖。
+### main 配方原则（2026-11-09 起）：官方内核源码零修改
 
-`release_backport_commits` 与 AVC 来源均为不可替换的完整 SHA，逐项写入产物清单；补丁 SHA256 与源码合同 SHA256 随构建保存。保留历史 Git 提交作为回退记录，删除的是当前构建中重复的补丁内容。
+`main` 的 `sukisu-builtin-release.patch` 只保留两处**构建胶水**，不含任何行为/功能修改：
+
+1. **Kconfig 胶水**：`KSU_SUSFS_PRIORITY_UID_FILTER` 符号。上游 susfs patch 的 `default y` 依赖此符号存在于 builtin 树的 Kconfig（官方 builtin 不自带），缺了编译不过。纯构建依赖，无运行时行为。
+2. **Makefile 胶水**：无条件 `-DKSU_NO_PREINIT`（pinned susfs 2.3.0 的 preinit 钩子未接通，见下节）+ 离线化 `GITHUB_COMMITS :=` 禁用（CI 不依赖运行时 release 查询）。
+
+已移除的内核修改（历史配方 `codex/sukisu-v4.3.0-r2` 分支仍可查到）：
+
+- **AVC backport**（`ff7dfe2d`）：kprobe 替换 `slow_avc_audit` 审计 tcontext 的移植 —— 属"功能"级修改，按 main 零修改原则移除。本机 susfs 模块的 `avc_log_spoofing` 是 SUSFS 自带 hook（`10_enable_susfs_for_ksu.patch` 内），与这个独立；移除后 `ksu_susfs enable_avc_log_spoofing` 仍可用，SukiSU 侧的 avc_spoof feature 不再存在。
+- **release backports**（`8f6d140`/`45fab659`/`85d05cf2`）：原子输入回调、高频路径日志清理、SELinux generation 修复 —— 全部是行为修改，移除。`85d05cf2` 的 generation 修复对应 dmesg 里策略重载行为，移除后策略发布路径回到官方 builtin 原样。
+- **pr_info 删除**（sucompat/lsm_hook/ksud）：日志噪音清理，行为无差别，移除（恢复官方原样即保留这些 log，属"官方源码原样"）。
+
+features 从 `10004` 回到官方 builtin 的 `KSU_FEATURE_MAX`（17，即 MOUNT_HIDE=16 之后），GET_INFO 上报值随之变化；合约测试同步改为校验 17。`CONFIG_KPROBES` 不再由本管线强制（defconfig 本身含）。
+
+保留项（非内核修改配方）：
+
+- **banner 对齐**（`stock_kernel_release_suffix` / `stock_kernel_build_stamp`）：rubens 原厂 release 串与 UTS_VERSION 硬编码，11-02 小黑盒事故的修复，用户明确要求保留。
+- `CONFIG_KPM=n` / `CONFIG_KSU_DEBUG=n` 与 SUSFS feature 组 defconfig 追加：构建配置选择，非源码修改。
 
 ## 保留的兼容改动与限制
 
@@ -63,8 +75,4 @@ SuSFS 2.3.0 的现有 exec hooks 尚未接通新版 builtin 的 preinit runner�
 
 保留 common 侧 `ksu_su_compat_enabled` 的 bool 类型和三参数 read hook 适配。SUSFS 自己拥有三个 SELinux 隐藏入口的本地实现；合同检查 UID、运行开关、原始回退及参数，不重新添加已删除的 builtin 委托补丁。
 
-官方 builtin 仍没有 AVC audit 日志 target SID 替换功能，因此保留来自 `ff7dfe2dbc39f78a08ee6fcff23bc615b0f54ea2` 的移植。版本字符串的 `+avc-ff7dfe2d` 与构建清单明确记录来源。
-
-移植仅适配 builtin 的统一编译单元、初始化与启动完成入口、头文件位置和局部静态符号名称。feature 与 extension 的同名强制状态位图分别命名，使统一编译仍保持两组状态隔离。UAPI仍为6，新增 feature ID10003，GET_INFO的features字段上限为10004；该上限不代表有10004项功能。
-
-功能依赖 `CONFIG_KPROBES=y`，官方实现仅修改 slow_avc_audit 的日志渲染 SID，不改变已完成的权限决策。首次启用时SID解析或探针注册失败不会激活探针；官方GET返回的是配置开关，并不证明探针在手机上已激活。实际SID、探针注册及与SuSFS日志处理的组合效果须刷入后另验；关闭此开关不会关闭SuSFS自己的日志处理。
+（AVC audit 日志 target SID 替换功能：官方 builtin 无此功能，main 配方不再移植；历史移植与验证记录见 `codex/sukisu-v4.3.0-r2` 分支及 reports/14。）

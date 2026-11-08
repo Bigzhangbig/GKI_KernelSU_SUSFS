@@ -115,49 +115,26 @@ class LatestReleasePolicyTests(unittest.TestCase):
         self.assertEqual((tag, version), ('v4.2.1-r1', 41049))
         self.assertEqual(found, asset)
 
-    def test_backported_kernel_identity_is_explicit_and_immutable(self):
+    def test_backend_identity_is_explicit_and_immutable(self):
         from dataclasses import replace
-        upstream = 'ff7dfe2dbc39f78a08ee6fcff23bc615b0f54ea2'
         target = replace(self.baseline, tag='v4.2.1-r2', backend_tag='v4.2.1-r2',
-                         version=41068, manager_version=41068, features=10004,
-                         apk_name='SukiSU_v4.2.1-r2_41068-release.apk',
-                         avc_backport_commit=upstream)
-        self.assertEqual(target.full_version, 'v4.2.1-r2-aaaaaaaa+avc-ff7dfe2d@builtin')
-        self.assertEqual(target.pins['avc_backport_commit'], upstream)
-        self.assertNotIn('avc_backport_commit', self.baseline.pins)
+                         version=41068, manager_version=41068, features=17,
+                         apk_name='SukiSU_v4.2.1-r2_41068-release.apk')
+        self.assertEqual(target.full_version, 'v4.2.1-r2-aaaaaaaa@builtin')
         self.assertEqual(self.baseline.full_version, 'v4.2.1-aaaaaaaa@builtin')
         with patch.object(policy, 'load_release_target', return_value=target):
             policy.validate_target(target)
-            for changed in (None, 'f' * 40):
+            for changed in (40994, 6):
                 with self.assertRaisesRegex(ValueError, 'Backend recipe'):
-                    policy.validate_target(replace(target, avc_backport_commit=changed))
-        for invalid in ('abc', '', 1):
-            with self.assertRaisesRegex(ValueError, 'backport'):
-                policy._shape(replace(target, avc_backport_commit=invalid))
+                    policy.validate_target(replace(target, features=changed))
+            with self.assertRaisesRegex(ValueError, 'Release identity fields'):
+                policy._shape(replace(target, features='f' * 64))
 
     def test_latest_entrypoint_actually_queries_latest(self):
         with self.environment() as calls:
             target = policy.resolve_latest_release()
         self.assertEqual(calls[0], "releases/latest")
         self.assertEqual(target.manager_version, 40995)
-
-    def test_release_backports_are_explicit_immutable_source_pins(self):
-        from dataclasses import replace
-        commits = ("8f6d140e906f17d2591588415c50b0fb59fb3c85",
-                   "45fab659b621d53138f9bb9c0c1829219aa07c1c",
-                   "85d05cf22bb0bcc7d41d555221d7eedc850b709f")
-        target = replace(self.baseline, release_backport_commits=commits)
-        self.assertEqual(target.pins["release_backport_1_commit"], commits[0])
-        self.assertEqual(target.pins["release_backport_3_commit"], commits[2])
-        self.assertIn("+release-85d05cf2", target.full_version)
-        with patch.object(policy, "load_release_target", return_value=target):
-            policy.validate_target(target)
-            for changed in ((), commits[:-1], ("f" * 40,)):
-                with self.assertRaisesRegex(ValueError, "Backend recipe"):
-                    policy.validate_target(replace(target, release_backport_commits=changed))
-        for invalid in (("abc",), (1,), (commits[0], commits[0]), "bad", [commits[0]]):
-            with self.assertRaisesRegex(ValueError, "backport"):
-                policy._shape(replace(target, release_backport_commits=invalid))
 
     def test_changed_kernel_uapi_or_interaction_source_stops_before_download(self):
         for path in ("kernel/core/init.c", "uapi/supercall.h", *sorted(policy.INTERACTION_PATHS)):

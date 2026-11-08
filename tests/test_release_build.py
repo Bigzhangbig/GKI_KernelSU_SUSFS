@@ -70,9 +70,9 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertEqual(selected.target, latest)
         self.assertEqual(config_for_latest.target.version, 41150)
         self.assertEqual(config_for_latest.target.backend_tag, "v4.3.0-r2")
-        self.assertEqual(config_for_latest.target.full_version, "v4.3.0-r2-1cfa5734+avc-ff7dfe2d+release-85d05cf2@builtin")
+        self.assertEqual(config_for_latest.target.full_version, "v4.3.0-r2-1cfa5734@builtin")
         self.assertEqual(config_for_latest.to_dict()["manager_version"], 40995)
-        for field_name in ("kernelsu_commit", "common_commit", "susfs_commit", "patch_commit", "anykernel_commit", "avc_backport_commit"):
+        for field_name in ("kernelsu_commit", "common_commit", "susfs_commit", "patch_commit", "anykernel_commit"):
             with self.subTest(field=field_name), self.assertRaises(ValueError):
                 release_config(target=replace(latest, **{field_name: "c" * 40}))
         for changes in ({"version": 40995}, {"backend_tag": "v4.2.2"}, {"source_fingerprint": "c" * 64}):
@@ -297,7 +297,7 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertEqual(header.read_bytes(), original_header)
         self.assertIn("KSU_VERSION     := 41150\n", makefile.read_text())
         self.assertIn("VERSION_TAG     := 4.3.0-r2\n", makefile.read_text())
-        self.assertIn("KSU_VERSION_FULL := v4.3.0-r2-1cfa5734+avc-ff7dfe2d+release-85d05cf2@builtin\n", makefile.read_text())
+        self.assertIn("KSU_VERSION_FULL := v4.3.0-r2-1cfa5734@builtin\n", makefile.read_text())
         self.assertNotIn("/releases/latest", makefile.read_text())
         self.assertIn("KSU_GITHUB_VER   := 4.3.0-r2\n", makefile.read_text())
         self.assertNotIn("4.3.1", makefile.read_text())
@@ -369,9 +369,6 @@ class ReleaseBuildTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "KSU_DEBUG or KPM"):
                 self.builder.verify_pinned_outputs()
         dest.write_text("CONFIG_KSU=y\nCONFIG_KSU_SUSFS=y\n# CONFIG_KPM is not set\n")
-        with self.assertRaisesRegex(RuntimeError, 'CONFIG_KPROBES'):
-            self.builder.verify_pinned_outputs()
-        dest.write_text(dest.read_text() + 'CONFIG_KPROBES=y\n')
         self.assertEqual(self.builder.verify_pinned_outputs().name, "Image")
         (self.builder.work_dir / "out/android12-5.10/dist/System.map").write_text("")
         with self.assertRaisesRegex(RuntimeError, "System.map"):
@@ -406,7 +403,8 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertEqual(data["manager_version"], self.builder.config.target.manager_version)
         self.assertEqual(data["backend_tag"], "v4.3.0-r2")
         self.assertEqual(data["backend_version"], 41150)
-        self.assertEqual(data["avc_backport_commit"], "ff7dfe2dbc39f78a08ee6fcff23bc615b0f54ea2")
+        self.assertNotIn("avc_backport_commit", data)
+        self.assertNotIn("release_backport_1_commit", data)
         snapshot = json.loads((self.builder.work_dir / "release-target.json").read_text())
         self.assertEqual(snapshot["tag"], self.builder.config.target.tag)
         self.assertEqual(snapshot["manager_version"], self.builder.config.target.manager_version)

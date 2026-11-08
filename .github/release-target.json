@@ -3,7 +3,7 @@
   "release_commit": "645ef9860b9b7f900bb5d1b27e224f2c311d39c0",
   "version": 41150,
   "uapi": 6,
-  "features": 10004,
+  "features": 17,
   "kernelsu_commit": "1cfa57340590971cba7521ed536da8ebbedc5f0a",
   "susfs_commit": "b0e474642cf77ee797004a454fa441362723d0ba",
   "susfs_version": "2.3.0",
@@ -22,11 +22,5 @@
   "manager_certificate_sha256": "947ae944f3de4ed4c21a7e4f7953ecf351bfa2b36239da37a34111ad29993eef",
   "backend_tag": "v4.3.0-r2",
   "manager_version": 41150,
-  "source_fingerprint": "857640582e3ded62b6536c5eef23372296a330f33014bd743faebdd1d9af39a7",
-  "avc_backport_commit": "ff7dfe2dbc39f78a08ee6fcff23bc615b0f54ea2",
-  "release_backport_commits": [
-    "8f6d140e906f17d2591588415c50b0fb59fb3c85",
-    "45fab659b621d53138f9bb9c0c1829219aa07c1c",
-    "85d05cf22bb0bcc7d41d555221d7eedc850b709f"
-  ]
+  "source_fingerprint": "857640582e3ded62b6536c5eef23372296a330f33014bd743faebdd1d9af39a7"
 }
