@@ -9,7 +9,8 @@
 # 追加：
 #   python3 + python-is-python3 —— ubuntu 24.04 系统即 3.12，替代 actions/setup-python
 #   zstd —— actions/cache 压缩所需
-#   openssh-client gnupg —— 宿主 runner 预装但基础镜像没有；repo sync / git / 验签隐式依赖
+#   openssh-client gnupg rsync —— 宿主 runner 预装但基础镜像没有：
+#   repo sync 需 ssh；headers_install 需 rsync（GKI 构建末段复制 UAPI 头）
 #   sudo —— 供复用本镜像的其他仓库在调试步骤里兜底
 # 不进镜像（由 kernel_builder.py 运行时获取）：repo 启动器、clang 工具链（随 GKI manifest 同步）
 FROM ubuntu:24.04
@@ -23,7 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ccache git gh curl wget zip unzip xz-utils openssl pixz \
       binutils-aarch64-linux-gnu apksigner \
       python3 python-is-python3 zstd sudo ca-certificates \
-      openssh-client gnupg \
+      openssh-client gnupg rsync \
     && rm -rf /var/lib/apt/lists/*
 
 # GitHub Actions 容器作业里 run 步骤默认 shell 是 sh，不支持 set -o pipefail；
