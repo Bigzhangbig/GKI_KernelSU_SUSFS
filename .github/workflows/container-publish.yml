@@ -17,8 +17,9 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  # metadata-action 会把镜像名统一转为小写（ghcr 要求全小写路径）
-  IMAGE_NAME: ${{ github.repository }}
+  # 固定镜像名，与 Dockerfile 注释和 kernel-build.yml 的 container 引用一致；
+  # metadata-action 会把 owner/镜像名统一转为小写（ghcr 要求全小写路径）。
+  IMAGE_NAME: ${{ github.repository_owner }}/gki-kernel-build
 
 jobs:
   build-push:
