@@ -12,6 +12,8 @@ from pathlib import Path
 
 MANIFEST_NAME = "release-manifest.json"
 RESOLVED_NAME = "release-resolved-manifest.xml"
+KSTAT_PATCH = Path(__file__).resolve().parent.parent / "patches/susfs-kstat-lifetime.patch"
+KSTAT_CONTRACT = Path(__file__).resolve().parents[3] / "tests/test_kstat_lifetime_contract.py"
 FUNCTIONS = ("do_get_info", "do_get_info_legacy", "do_report_event", "do_extension", "do_lookup_symbols")
 
 
@@ -60,6 +62,10 @@ def check_manifest(source: Path, target) -> dict:
                  "resolved source manifest hash differs")
     require(manifest.get("release_tag") == target.tag and
                  manifest.get("release_commit") == target.release_commit, "official Release identity differs")
+    for key, path in (("kstat_lifetime_patch_sha256", KSTAT_PATCH),
+                      ("kstat_lifetime_contract_sha256", KSTAT_CONTRACT)):
+        require(path.is_file(), "Required KSTAT identity input is missing: " + str(path))
+        require(manifest.get(key) == sha256(path), "Release manifest KSTAT identity mismatch: " + key)
     for key, expected in {
             "manager_version": target.manager_version, "backend_tag": target.backend_tag,
             "backend_version": target.version, "backend_source_commit": target.kernelsu_commit,
@@ -96,13 +102,14 @@ def check_archive(source: Path, target) -> tuple[bytes, dict]:
     for key in ("CONFIG_KSU", "CONFIG_KSU_SUSFS", "CONFIG_KSU_SUSFS_SUS_PATH",
                 "CONFIG_KSU_SUSFS_SUS_MOUNT", "CONFIG_KSU_SUSFS_SUS_MAP",
                 "CONFIG_KSU_SUSFS_SPOOF_UNAME", "CONFIG_KSU_SUSFS_OPEN_REDIRECT",
-                "CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER"):
+                "CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER", "CONFIG_KSU_SUSFS_SUS_KSTAT"):
         require(f"{key}=y" in lines, f"{key} is not enabled")
     for key in ("CONFIG_KPM", "CONFIG_KSU_DEBUG"):
         require(f"# {key} is not set" in lines, f"{key} is enabled or missing")
     require(target.manager_certificate_sha256.encode() in image, "official certificate digest missing from Image")
     susfs_version = "v" + target.susfs_version
     require(susfs_version.encode() in image, "SuSFS version string missing from Image")
+    require(b"KSTAT published path=" in image, "KSTAT lifetime marker missing from Image")
     android, kernel, sublevel, _ = target.kernel_tuple
     release_prefix = f"Linux version {kernel}.{sublevel}-{android}".encode()
     release = re.search(re.escape(release_prefix) + rb"[^\x00\n]*", image)
@@ -110,7 +117,7 @@ def check_archive(source: Path, target) -> tuple[bytes, dict]:
     return image, {"archive_sha256": sha256(archive), "image_sha256": hashlib.sha256(image).hexdigest(),
                    "image_bytes": len(image), "linux_release": release.group().decode(),
                    "embedded_config_matches": True, "official_certificate_present": True,
-                   "susfs_version_string": susfs_version}
+                   "susfs_version_string": susfs_version, "kstat_lifetime_marker_present": True}
 
 
 def hex_number(value: int) -> str:

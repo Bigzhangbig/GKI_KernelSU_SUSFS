@@ -4,6 +4,8 @@
 
 构建目标是 **Android 12 / Linux 5.10.209 / 2024-05 / r13**，使用 SUSFS **2.4.0**（含 priority UID filter），关闭 KPM 和 KSU_DEBUG。当前配方对应 **v4.3.0-r2 / 41150 / UAPI6**，用于 Redmi K50 rubens；不声明支持其他 GKI 组合。
 
+本分支 `codex/k50-upstream-inode-20261109` 在该配方上加入 KSTAT inode 生命周期修复。规则持有目标 inode 引用，并在替换规则或文件系统退出时释放。真实 SUSFS 2.4.0 源码合同、补丁摘要和打包 Image 的 `KSTAT published path=` 标记均参与构建门禁。用户已选定官方 builtin 当前最新基线 `1cfa5734`，手机重启与长期使用效果待刷入后验收。
+
 ## 分支与更新规则
 
 | 分支 | 用途 |

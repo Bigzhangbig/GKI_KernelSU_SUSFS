@@ -16,7 +16,9 @@ from release_target import resolve_latest_release
 
 RELEASE_PATCH = Path(__file__).resolve().parent.parent / "patches/sukisu-builtin-release.patch"
 COMMON_PATCH = Path(__file__).resolve().parent.parent / "patches/sukisu-common-uapi6.patch"
+KSTAT_PATCH = Path(__file__).resolve().parent.parent / "patches/susfs-kstat-lifetime.patch"
 RELEASE_CONTRACT = Path(__file__).resolve().parents[3] / "tests/release_contract.py"
+KSTAT_CONTRACT = Path(__file__).resolve().parents[3] / "tests/test_kstat_lifetime_contract.py"
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -356,6 +358,14 @@ CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER=y
         self._run_cmd(f"git apply {patch}")
 
 
+    def apply_kstat_lifetime_patch(self):
+        if not KSTAT_PATCH.is_file():
+            raise RuntimeError(f"Required KSTAT lifetime patch is missing: {KSTAT_PATCH}")
+        self._chdir(self.work_dir / "common")
+        patch = shlex.quote(str(KSTAT_PATCH))
+        self._run_cmd(f"git apply --check {patch}")
+        self._run_cmd(f"git apply {patch}")
+
     def apply_task_mmu_fixes(self):
         logger.info("=== 应用 task_mmu.c 修复 ===")
         self._chdir(self.work_dir / "common")
@@ -500,6 +510,8 @@ CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER=y
             "resolved_toolchain_manifest_sha256": hashlib.sha256(resolved_manifest.read_bytes()).hexdigest(),
             "source_patch_sha256": hashlib.sha256(self._pinned_patch.read_bytes()).hexdigest(),
             "common_compatibility_patch_sha256": hashlib.sha256(COMMON_PATCH.read_bytes()).hexdigest(),
+            "kstat_lifetime_patch_sha256": hashlib.sha256(KSTAT_PATCH.read_bytes()).hexdigest(),
+            "kstat_lifetime_contract_sha256": hashlib.sha256(KSTAT_CONTRACT.read_bytes()).hexdigest(),
             "source_contract_sha256": hashlib.sha256(self._pinned_contract.read_bytes()).hexdigest(),
             "setup_script_sha256": hashlib.sha256(setup_file.read_bytes()).hexdigest(),
             "kernel_makefile_sha256": hashlib.sha256(makefile.read_bytes()).hexdigest(),
@@ -524,6 +536,8 @@ CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER=y
             raise RuntimeError(f"{self.config.target.name} generated .config does not enable KernelSU and SUSFS")
         if any(f"{key}=y" in config_lines for key in ("CONFIG_KSU_DEBUG", "CONFIG_KPM")):
             raise RuntimeError(f"{self.config.target.name} generated .config unexpectedly enables KSU_DEBUG or KPM")
+        if "CONFIG_KSU_SUSFS_SUS_KSTAT=y" not in config_lines:
+            raise RuntimeError("CONFIG_KSU_SUSFS_SUS_KSTAT is required for the KSTAT lifetime patch")
         return image
 
 
@@ -657,6 +671,7 @@ CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER=y
             self.test_pinned_contract()
             self.apply_susfs_patches()
             self.apply_sukisu_patches()
+            self.apply_kstat_lifetime_patch()
             self.apply_task_mmu_fixes()
             self.configure_kernel()
             self.verify_pinned_sources()

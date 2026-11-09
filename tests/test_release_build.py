@@ -1,5 +1,6 @@
 """Only the audited latest Release recipe may enter the strict build pipeline."""
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -358,6 +359,73 @@ class ReleaseBuildTests(unittest.TestCase):
             self.assertEqual([line for line in dest.read_text().splitlines()
                               if line.startswith(key + "=")][-1], key + "=n")
 
+    def test_kstat_patch_is_required_and_checked_before_apply(self):
+        common = self.builder.work_dir / "common"
+        self.real_git_input(common)
+        kstat_patch = Path(self.temp.name) / "kstat lifetime.patch"
+        with patch.object(kernel_builder, "KSTAT_PATCH", kstat_patch, create=True):
+            with self.assertRaisesRegex(RuntimeError, "KSTAT.*missing"):
+                self.builder.apply_kstat_lifetime_patch()
+            kstat_patch.write_text(
+                "--- a/tracked.txt\n+++ b/tracked.txt\n@@ -1 +1 @@\n"
+                "-committed input\n+protected inode lifetime\n")
+            self.builder.apply_kstat_lifetime_patch()
+            self.assertEqual((common / "tracked.txt").read_text(), "protected inode lifetime\n")
+            # A mismatched context must stop at --check, leaving the file intact.
+            kstat_patch.write_text(kstat_patch.read_text().replace("-committed input", "-unknown baseline"))
+            with self.assertRaises(subprocess.CalledProcessError), \
+                    patch.object(self.builder, "_run_cmd", wraps=self.builder._run_cmd) as run:
+                self.builder.apply_kstat_lifetime_patch()
+            self.assertEqual(len(run.call_args_list), 1)
+            self.assertIn("git apply --check", run.call_args.args[0])
+            self.assertEqual((common / "tracked.txt").read_text(), "protected inode lifetime\n")
+
+    def test_build_applies_kstat_after_sukisu_before_task_mmu_and_stops_on_failure(self):
+        from contextlib import ExitStack
+        calls = []
+        names = ("_verify_latest_release", "clone_repositories", "setup_repo_tool",
+                 "init_and_sync_kernel", "add_kernelsu", "apply_pinned_patch", "test_pinned_contract",
+                 "apply_susfs_patches", "apply_sukisu_patches", "apply_kstat_lifetime_patch",
+                 "apply_task_mmu_fixes", "configure_kernel", "verify_pinned_sources",
+                 "configure_kernel_name", "show_kernel_config", "build_kernel")
+        for failure in ("apply_kstat_lifetime_patch", "build_kernel"):
+            calls.clear()
+            with ExitStack() as stack:
+                for name in names:
+                    def record(method=name):
+                        calls.append(method)
+                        if method == failure:
+                            raise RuntimeError("controlled stop: " + method)
+                    stack.enter_context(patch.object(self.builder, name, side_effect=record, create=True))
+                result = self.builder.build()
+            self.assertFalse(result.success)
+            self.assertIn("apply_kstat_lifetime_patch", calls)
+            self.assertIn("controlled stop", result.message)
+            self.assertEqual(calls[calls.index("apply_sukisu_patches") + 1], "apply_kstat_lifetime_patch")
+            if failure == "apply_kstat_lifetime_patch":
+                self.assertNotIn("apply_task_mmu_fixes", calls)
+                self.assertNotIn("build_kernel", calls)
+            else:
+                self.assertEqual(calls[calls.index("apply_kstat_lifetime_patch") + 1], "apply_task_mmu_fixes")
+
+    def test_common_contract_calls_kstat_contract_without_loading_it_for_host_header(self):
+        import importlib
+        import types
+        # Importing the release contract must not require the new common-only
+        # contract; the pre-SUSFS --host-header phase has no common tree yet.
+        with patch.dict(sys.modules, {"test_kstat_lifetime_contract": None}):
+            contract = importlib.reload(importlib.import_module("release_contract"))
+        checker = unittest.mock.Mock(side_effect=RuntimeError("KSTAT contract reached"))
+        module = types.ModuleType("test_kstat_lifetime_contract")
+        module.check_common = checker
+        common = self.builder.work_dir / "common"
+        with patch.dict(sys.modules, {"test_kstat_lifetime_contract": module}), \
+                patch.object(contract, "check_selinux_hide_sources", side_effect=RuntimeError("old common checks reached")), \
+                self.assertRaisesRegex(RuntimeError, "KSTAT contract reached"):
+            contract.common_contract(self.builder.work_dir / "KernelSU", common)
+        checker.assert_called_once_with(common)
+
+
     def test_output_gate_requires_all_binaries_and_generated_susfs_config(self):
         for name in ("Image", "vmlinux", "System.map"):
             self.write(f"out/android12-5.10/dist/{name}", "compiled fixture")
@@ -369,6 +437,9 @@ class ReleaseBuildTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "KSU_DEBUG or KPM"):
                 self.builder.verify_pinned_outputs()
         dest.write_text("CONFIG_KSU=y\nCONFIG_KSU_SUSFS=y\n# CONFIG_KPM is not set\n")
+        with self.assertRaisesRegex(RuntimeError, "CONFIG_KSU_SUSFS_SUS_KSTAT"):
+            self.builder.verify_pinned_outputs()
+        dest.write_text(dest.read_text() + "CONFIG_KSU_SUSFS_SUS_KSTAT=y\n")
         self.assertEqual(self.builder.verify_pinned_outputs().name, "Image")
         (self.builder.work_dir / "out/android12-5.10/dist/System.map").write_text("")
         with self.assertRaisesRegex(RuntimeError, "System.map"):
@@ -386,8 +457,14 @@ class ReleaseBuildTests(unittest.TestCase):
         source_contract.write_text("# contract\n")
         uapi_patch = Path(self.temp.name) / "patch.diff"
         uapi_patch.write_text("patch\n")
+        kstat_patch = Path(self.temp.name) / "kstat.patch"
+        kstat_patch.write_text("independent KSTAT patch\n")
+        kstat_contract = Path(self.temp.name) / "kstat_contract.py"
+        kstat_contract.write_text("# actual independent KSTAT contract\n")
         with patch.object(kernel_builder, "RELEASE_CONTRACT", source_contract), \
                 patch.object(kernel_builder, "RELEASE_PATCH", uapi_patch), \
+                patch.object(kernel_builder, "KSTAT_PATCH", kstat_patch, create=True), \
+                patch.object(kernel_builder, "KSTAT_CONTRACT", kstat_contract, create=True), \
                 patch.object(self.builder, "_assert_git_head") as verify, \
                 patch.object(self.builder, "_run_cmd", return_value=argparse.Namespace(stdout="f" * 40)):
             self.builder.write_pinned_manifest()
@@ -396,6 +473,8 @@ class ReleaseBuildTests(unittest.TestCase):
         self.assertEqual(data["kernelsu_commit"], self.builder.config.target.kernelsu_commit)
         self.assertIn("KernelSU 41150 / UAPI 6", data["target"])
         self.assertEqual(len(data["source_contract_sha256"]), 64)
+        self.assertEqual(data["kstat_lifetime_patch_sha256"], hashlib.sha256(kstat_patch.read_bytes()).hexdigest())
+        self.assertEqual(data["kstat_lifetime_contract_sha256"], hashlib.sha256(kstat_contract.read_bytes()).hexdigest())
         self.assertEqual(data["release_tag"], "v4.2.2")
         self.assertEqual(data["release_commit"], "a" * 40)
         self.assertEqual(data["builtin_compatibility_commit"], self.builder.config.target.kernelsu_commit)
