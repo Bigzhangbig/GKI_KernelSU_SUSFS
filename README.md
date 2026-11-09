@@ -19,6 +19,31 @@
 
 已审查的后端配方位于 [.github/release-target.json](.github/release-target.json)。构建产物中的 `release-target.json` 则记录该次实际选中的正式 Release 和官方 APK 身份，供后续复验使用。
 
+## 为什么钉死版本 —— "fork 最新提交" ≠ 固定
+
+一个常见疑问："fork 上游源码到最新那个提交，不就已经固定了吗？" —— 在很窄的意义上成立（那个提交是确定坐标），但不足以支撑本管线的目标，有三道裂缝：
+
+**1. fork 的"最新"是随时间移动的标签，不是坐标。**
+fork 的 `main` / `HEAD` / "最新提交" 是会被前进、甚至被 force-push 改写的**标签**；SHA 才是不会变的**坐标**。不 pull 上游它停在旧位置（叫"最新"其实是"旧"），定期 pull 则同一个 `main HEAD` 今天明天是两个东西。
+
+**2. 构建依赖 5 个仓库，fork 只覆盖 1 个。**
+真正进内核的东西是 SukiSU builtin、`ShirkNeko/susfs4ksu`、GKI common 源、AnyKernel3 模板、官方 APK 这一整套，各家都在独立漂移。"每家都用最新"是最危险组合，不是"各取最新就能编"。
+
+**3. 各家"最新"之间有隐式符号依赖。**
+例：susfs 某 commit 的 `exec.c` 引用 `susfs_set_priority_uid_filter`，该符号要求 kernelsu 树也到对应位置，两边配错直接编译挂（41100 就踩过，见 reports/14）。显式钉成一组已验证的组合，才能审计与复现。
+
+**真正的固定点在 `release-target.json`，不在 fork。**
+fork 只是放补丁/胶水/workflow 的载体，它"最新推到哪个 commit"与构建身份无关。身份锚在配方的这些字段上：
+
+```
+kernelsu_commit / susfs_commit / patch_commit / common_commit /
+anykernel_commit / release_commit / apk_sha256 / source_fingerprint
+```
+
+其中 `source_fingerprint` 按 **kernel/ uapi/ userspace/ 的文件内容哈希**（不是分支名或"最新提交"）计算。所以即使 fork 的 main 被推来推去，只要这些字段没变，`verify_delivery.py` 就能逐字节证明"这次 CI 编出的 Image = 钉死那份源码编出的"。上游一变更（哪怕只动一行内核），指纹就变、门禁就故意拦住，逼人工审后再放行——这就是"r2 适配"要走一遍的原因。
+
+一句话：**你要的是跨时间、跨机器、多仓库、可审计的确定性；固定的是坐标(SHA) + 内容指纹，fork 只是打补丁和跑流水线的工具，不承担"固定"的职责。**
+
 ## 构建与检查
 
 在 GitHub **Actions → Kernel Build → Run workflow** 手动启动完整构建，没有版本、SHA、Dev 或矩阵输入。成功后下载 `kernel-release` 中的 AnyKernel3 ZIP；`evidence-release` 保存配置、源码清单和链接后二进制验证证据。
