@@ -2,7 +2,7 @@
 
 `main` 只维护正式 Release 构建。每次校验或构建都会查询 SukiSU-Ultra 最新的正式 Release，核对源码接口、官方 APK 签名和 native UAPI，再决定能否继续。
 
-构建目标是 **Android 12 / Linux 5.10.209 / 2024-05 / r13**，使用 SUSFS **2.3.0**（含 priority UID filter），关闭 KPM 和 KSU_DEBUG。当前配方对应 **v4.3.0-r2 / 41150 / UAPI6**，用于 Redmi K50 rubens；不声明支持其他 GKI 组合。
+构建目标是 **Android 12 / Linux 5.10.209 / 2024-05 / r13**，使用 SUSFS **2.4.0**（含 priority UID filter），关闭 KPM 和 KSU_DEBUG。当前配方对应 **v4.3.0-r2 / 41150 / UAPI6**，用于 Redmi K50 rubens；不声明支持其他 GKI 组合。
 
 ## 分支与更新规则
 
@@ -79,7 +79,7 @@ v4.3.0-r2 适配（2026-11-08）：官方变更仅在 manager 侧 —— `build.
 `main` 的 `sukisu-builtin-release.patch` 只保留两处**构建胶水**，不含任何行为/功能修改：
 
 1. **Kconfig 胶水**：`KSU_SUSFS_PRIORITY_UID_FILTER` 符号。上游 susfs patch 的 `default y` 依赖此符号存在于 builtin 树的 Kconfig（官方 builtin 不自带），缺了编译不过。纯构建依赖，无运行时行为。
-2. **Makefile 胶水**：无条件 `-DKSU_NO_PREINIT`（pinned susfs 2.3.0 的 preinit 钩子未接通，见下节）+ 离线化 `GITHUB_COMMITS :=` 禁用（CI 不依赖运行时 release 查询）。
+2. **Makefile 胶水**：无条件 `-DKSU_NO_PREINIT`（pinned susfs 2.4.0 的 preinit 钩子未接通，见下节）+ 离线化 `GITHUB_COMMITS :=` 禁用（CI 不依赖运行时 release 查询）。
 
 已移除的内核修改（历史配方 `codex/sukisu-v4.3.0-r2` 分支仍可查到）：
 
@@ -96,7 +96,7 @@ features 从 `10004` 回到官方 builtin 的 `KSU_FEATURE_MAX`（17，即 MOUNT
 
 ## 保留的兼容改动与限制
 
-SuSFS 2.3.0 的现有 exec hooks 尚未接通新版 builtin 的 preinit runner，因此显式定义 `KSU_NO_PREINIT`，不回报 PREINIT 支持，管理器继续使用常规模块启动流程。此构建不宣称支持 preinit。
+SuSFS 2.4.0 的现有 exec hooks 尚未接通新版 builtin 的 preinit runner，因此显式定义 `KSU_NO_PREINIT`，不回报 PREINIT 支持，管理器继续使用常规模块启动流程。此构建不宣称支持 preinit。
 
 保留 common 侧 `ksu_su_compat_enabled` 的 bool 类型和三参数 read hook 适配。SUSFS 自己拥有三个 SELinux 隐藏入口的本地实现；合同检查 UID、运行开关、原始回退及参数，不重新添加已删除的 builtin 委托补丁。
 
