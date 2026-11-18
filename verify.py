@@ -15,6 +15,7 @@ import zlib
 EXPECTED_CONFIG = {
     "ARM64": "y",
     "IKCONFIG": "y",
+    "ZSMALLOC": "y",
     "ZRAM": "y",
     "ZRAM_WRITEBACK": "y",
     "ZRAM_DEF_COMP_LZ4KD": "y",
@@ -27,6 +28,9 @@ REQUIRED_FUNCTIONS = (
     "lz4kd_compress_crypto",
     "lz4kd_decompress_crypto",
 )
+# ThinLTO can promote a local function using a hash suffix. A CFI jump-table
+# symbol alone is not the function body and must not satisfy this check.
+PROMOTED_SUFFIX = re.compile(r"(?:\$[0-9a-f]{32}|\.llvm\.[0-9]+)$")
 EXCLUDED_ADDONS = re.compile(r"(?:^|_)(?:kernelsu|ksu|susfs)(?:_|$)", re.I)
 CONFIG_LINE = re.compile(rb"^CONFIG_([A-Z0-9_]+)=(.+)$", re.M)
 LINUX_BANNER = re.compile(rb"Linux version (5\.10\.209(?:[-+][^\s]*)?) ")
@@ -69,21 +73,34 @@ def read_required_symbols(data, source):
         address, symbol_type, name = line.split(maxsplit=2)
         name = name.decode("ascii")
         check(not EXCLUDED_ADDONS.search(name), f"unexpected add-on symbol {name} in {source}")
-        if symbol_type in (b"T", b"t") and name in REQUIRED_FUNCTIONS:
-            functions.setdefault(name, set()).add(int(address, 16))
+        base_name = PROMOTED_SUFFIX.sub("", name)
+        if symbol_type in (b"T", b"t") and base_name in REQUIRED_FUNCTIONS:
+            functions.setdefault(base_name, set()).add((int(address, 16), name))
     for name in REQUIRED_FUNCTIONS:
         check(name in functions, f"missing text symbol {name} in {source}")
     return functions
 
 
-def verify_elf(elf, image, required_symbols):
+def kernel_tool(workdir, name):
+    override = os.environ.get(name.upper())
+    if override:
+        return override
+    # Resolve the two pinned toolchain locations in build.sh.
+    for directory in ("toolchain", "clang-git/clang-r416183b"):
+        candidate = workdir / directory / "bin" / f"llvm-{name}"
+        if candidate.is_file():
+            return str(candidate.resolve())
+    return f"aarch64-linux-gnu-{name}"
+
+
+def verify_elf(workdir, elf, image, required_symbols):
     with elf.open("rb") as file:
         header = file.read(20)
     check(header[:7] == b"\x7fELF\x02\x01\x01" and header[16:18] in (b"\x02\x00", b"\x03\x00")
           and header[18:20] == b"\xb7\x00", "vmlinux is not a little-endian ELF64 AArch64 kernel")
 
-    objcopy = os.environ.get("OBJCOPY", "aarch64-linux-gnu-objcopy")
-    nm = os.environ.get("NM", "aarch64-linux-gnu-nm")
+    objcopy = kernel_tool(workdir, "objcopy")
+    nm = kernel_tool(workdir, "nm")
     with tempfile.TemporaryDirectory() as tempdir:
         rebuilt = Path(tempdir) / "Image"
         # Match the Image export in arch/arm64/boot/Makefile for this kernel.
@@ -110,7 +127,7 @@ def main():
     config = verify_image_config(image, (out / ".config").read_bytes())
     system_map = (out / "System.map").read_bytes()
     required_symbols = read_required_symbols(system_map, "System.map")
-    verify_elf(out / "vmlinux", image, required_symbols)
+    verify_elf(args.build_workdir, out / "vmlinux", image, required_symbols)
     banner = LINUX_BANNER.search(image)
     check(banner is not None, "Image has no Linux 5.10.209 version banner")
 
@@ -121,8 +138,8 @@ def main():
         "Image IKCONFIG gzip data exactly matches the build .config.",
         *[f"CONFIG_{key}={value}" for key, value in EXPECTED_CONFIG.items()],
         "Required System.map text symbols match vmlinux:",
-        *[f"  {address:016x} {name}"
-          for name, addresses in required_symbols.items() for address in sorted(addresses)],
+        *[f"  {address:016x} {name}" for base_name in REQUIRED_FUNCTIONS
+          for address, name in sorted(required_symbols[base_name])],
         "No KernelSU, KSU or SUSFS identifiers found in assigned configuration options "
         "or defined ELF symbols.",
         "Scope: static build verification. Device boot and swap behavior are untested.",

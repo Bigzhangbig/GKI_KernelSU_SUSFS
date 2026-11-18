@@ -28,7 +28,10 @@ jobs:
       - name: Compile the ARM64 kernel
         run: bash build.sh "$RUNNER_TEMP/gki-zram"
       - name: Verify the compiled image
-        run: python3 verify.py "$RUNNER_TEMP/gki-zram" "$RUNNER_TEMP/verified-zram"
+        run: |
+          grep -E ' [Tt] (zram_init|zram_submit_bio|lz4kd_(de)?compress_crypto)([.$]|$)' \
+            "$RUNNER_TEMP/gki-zram/out/System.map"
+          python3 verify.py "$RUNNER_TEMP/gki-zram" "$RUNNER_TEMP/verified-zram"
       - name: Upload image and verification evidence
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
